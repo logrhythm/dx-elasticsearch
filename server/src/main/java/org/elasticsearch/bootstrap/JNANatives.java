@@ -197,7 +197,7 @@ class JNANatives {
 		LOCAL_MLOCKALL = true;
                 // Move to the next region
                 address += memInfo.RegionSize.longValue();
-                }
+            }
             LOCAL_MLOCKALL = true;
         } catch (UnsatisfiedLinkError e) {
             // this will have already been logged by Kernel32Library, no need to repeat it
