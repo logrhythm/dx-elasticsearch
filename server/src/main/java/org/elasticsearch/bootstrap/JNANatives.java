@@ -194,7 +194,6 @@ class JNANatives {
                 if (lockable) {
                     kernel.VirtualLock(memInfo.BaseAddress, new SizeT(memInfo.RegionSize.longValue()));
                 }
-		LOCAL_MLOCKALL = true;
                 // Move to the next region
                 address += memInfo.RegionSize.longValue();
             }
