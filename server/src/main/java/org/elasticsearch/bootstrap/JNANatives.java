@@ -185,7 +185,7 @@ class JNANatives {
             // the amount of memory we wish to lock, plus a small overhead (1MB).
             SizeT size = new SizeT(JvmInfo.jvmInfo().getMem().getHeapInit().getBytes() + (1024 * 1024));
             logger.info("Skipping SetProcessWorkingSetSize - heap size: " + size.toString());
-	    JNAKernel32Library.MemoryBasicInformation memInfo = new JNAKernel32Library.MemoryBasicInformation();
+            JNAKernel32Library.MemoryBasicInformation memInfo = new JNAKernel32Library.MemoryBasicInformation();
             long address = 0;
             while (kernel.VirtualQueryEx(process, new Pointer(address), memInfo, memInfo.size()) != 0) {
             	boolean lockable = memInfo.State.longValue() == JNAKernel32Library.MEM_COMMIT
