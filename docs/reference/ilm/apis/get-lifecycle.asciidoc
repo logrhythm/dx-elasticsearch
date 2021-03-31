@@ -11,6 +11,7 @@ Retrieves a lifecycle policy.
 ==== Request
 
 `GET _ilm/policy`
+
 `GET _ilm/policy/<policy_id>`
 
 ==== Description
@@ -30,7 +31,7 @@ include::{docdir}/rest-api/timeoutparms.asciidoc[]
 ==== Authorization
 
 You must have the `manage_ilm` or `read_ilm` or both cluster privileges to use this API.
-For more information, see {stack-ov}/security-privileges.html[Security Privileges].
+For more information, see <<security-privileges>>.
 
 ==== Examples
 

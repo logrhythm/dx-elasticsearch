@@ -195,6 +195,7 @@ The Java High Level REST Client supports the following Snapshot APIs:
 * <<java-rest-high-snapshot-get-snapshots>>
 * <<java-rest-high-snapshot-snapshots-status>>
 * <<java-rest-high-snapshot-delete-snapshot>>
+* <<java-rest-high-snapshot-restore-snapshot>>
 
 include::snapshot/get_repository.asciidoc[]
 include::snapshot/create_repository.asciidoc[]
@@ -204,6 +205,7 @@ include::snapshot/create_snapshot.asciidoc[]
 include::snapshot/get_snapshots.asciidoc[]
 include::snapshot/snapshots_status.asciidoc[]
 include::snapshot/delete_snapshot.asciidoc[]
+include::snapshot/restore_snapshot.asciidoc[]
 
 == Tasks APIs
 
@@ -356,6 +358,7 @@ include::migration/get-assistance.asciidoc[]
 include::migration/upgrade.asciidoc[]
 include::migration/get-deprecation-info.asciidoc[]
 
+[role="xpack"]
 == Rollup APIs
 :upid: {mainid}-rollup
 :doc-tests-file: {doc-tests}/RollupDocumentationIT.java
@@ -380,6 +383,7 @@ include::rollup/search.asciidoc[]
 include::rollup/get_rollup_caps.asciidoc[]
 include::rollup/get_rollup_index_caps.asciidoc[]
 
+[role="xpack"]
 == Security APIs
 
 :upid: {mainid}-security
@@ -441,6 +445,7 @@ include::security/create-api-key.asciidoc[]
 include::security/get-api-key.asciidoc[]
 include::security/invalidate-api-key.asciidoc[]
 
+[role="xpack"]
 == Watcher APIs
 
 :upid: {mainid}-watcher
@@ -470,6 +475,7 @@ include::watcher/activate-watch.asciidoc[]
 include::watcher/execute-watch.asciidoc[]
 include::watcher/watcher-stats.asciidoc[]
 
+[role="xpack"]
 == Graph APIs
 
 The Java High Level REST Client supports the following Graph APIs:
@@ -490,6 +496,7 @@ don't leak into the rest of the documentation.
 :upid!:
 --
 
+[role="xpack"]
 == CCR APIs
 
 :upid: {mainid}-ccr
@@ -521,6 +528,7 @@ include::ccr/get_stats.asciidoc[]
 include::ccr/get_follow_stats.asciidoc[]
 include::ccr/get_follow_info.asciidoc[]
 
+[role="xpack"]
 == Index Lifecycle Management APIs
 
 :upid: {mainid}-ilm

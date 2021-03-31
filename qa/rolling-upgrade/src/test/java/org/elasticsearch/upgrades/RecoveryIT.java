@@ -38,6 +38,7 @@ import org.hamcrest.Matcher;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -438,13 +439,92 @@ public class RecoveryIT extends AbstractRollingTestCase {
                 .put(IndexMetaData.INDEX_NUMBER_OF_SHARDS_SETTING.getKey(), 1)
                 .put(IndexMetaData.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey(), 2);
             createIndex(index, settings.build());
+            indexDocs(index, 0, 100);
         }
-        ensureGreen(index);
-        indexDocs(index, 0, 10);
-        for (int i = 0; i < 10; i++) {
-            Request update = new Request("POST", index + "/test/" + i + "/_update");
-            update.setJsonEntity("{\"doc\": {\"f\": " + randomNonNegativeLong() + "}}");
-            client().performRequest(update);
+        if (randomBoolean()) {
+            ensureGreen(index);
+        }
+        Map<Integer, Long> updates = new HashMap<>();
+        for (int docId = 0; docId < 100; docId++) {
+            final int times = randomIntBetween(0, 2);
+            for (int i = 0; i < times; i++) {
+                Request update = new Request("POST", index + "/test/" + docId + "/_update");
+                long value = randomNonNegativeLong();
+                update.setJsonEntity("{\"doc\": {\"updated_field\": " + value + "}}");
+                client().performRequest(update);
+                updates.put(docId, value);
+            }
+        }
+        boolean refreshed = randomBoolean();
+        if (refreshed) {
+            client().performRequest(new Request("POST", index + "/_refresh"));
+        }
+        for (int docId : updates.keySet()) {
+            Request get = new Request("GET", index + "/test/" + docId);
+            if (refreshed && randomBoolean()) {
+                get.addParameter("realtime", "false");
+            }
+            Map<String, Object> doc = entityAsMap(client().performRequest(get));
+            assertThat(XContentMapValues.extractValue("_source.updated_field", doc), equalTo(updates.get(docId)));
+        }
+        if (randomBoolean()) {
+            syncedFlush(index);
+        }
+    }
+
+    /** Ensure that we can always execute delete-by-query regardless of the version of cluster */
+    public void testDeleteByQuery() throws Exception {
+        final String index = "test_delete_by_query";
+        if (CLUSTER_TYPE == ClusterType.OLD) {
+            Settings.Builder settings = Settings.builder()
+                .put(IndexMetaData.INDEX_NUMBER_OF_SHARDS_SETTING.getKey(), 1)
+                .put(IndexMetaData.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey(), 2);
+            createIndex(index, settings.build());
+        }
+        for (int i = 0; i < 100; i++) {
+            Request indexDoc = new Request("POST", index + "/test");
+            indexDoc.setJsonEntity("{\"test\": \"test_" + randomInt(5) + "\"}");
+            client().performRequest(indexDoc);
+        }
+        client().performRequest(new Request("POST", index + "/_refresh"));
+        if (randomBoolean()) {
+            ensureGreen(index);
+        }
+        Request deleteByQuery = new Request("POST", index + "/_delete_by_query");
+        deleteByQuery.setJsonEntity("{\"query\": {\"term\": { \"test\": \"test_" + CLUSTER_TYPE.ordinal() + "\" }}}");
+        Map<String, Object> doc = entityAsMap(client().performRequest(deleteByQuery));
+        logger.info(doc);
+
+        if (randomBoolean()) {
+            syncedFlush(index);
+        }
+    }
+
+    /** Ensure that we can always execute delete-by-query regardless of the version of cluster */
+    public void testUpdateByQuery() throws Exception {
+        final String index = "test_update_by_query";
+        if (CLUSTER_TYPE == ClusterType.OLD) {
+            Settings.Builder settings = Settings.builder()
+                .put(IndexMetaData.INDEX_NUMBER_OF_SHARDS_SETTING.getKey(), 1)
+                .put(IndexMetaData.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey(), 2);
+            createIndex(index, settings.build());
+        }
+        for (int i = 0; i < 100; i++) {
+            Request indexDoc = new Request("POST", index + "/test");
+            indexDoc.setJsonEntity("{\"test\": \"test_" + randomInt(5) + "\"}");
+            client().performRequest(indexDoc);
+        }
+        client().performRequest(new Request("POST", index + "/_refresh"));
+        if (randomBoolean()) {
+            ensureGreen(index);
+        }
+        Request updateByQuery = new Request("POST", index + "/_update_by_query");
+        updateByQuery.setJsonEntity("{\"query\": {\"term\": { \"test\": \"test_" + CLUSTER_TYPE.ordinal() + "\" }}}");
+        Map<String, Object> doc = entityAsMap(client().performRequest(updateByQuery));
+        logger.info(doc);
+
+        if (randomBoolean()) {
+            syncedFlush(index);
         }
     }
 

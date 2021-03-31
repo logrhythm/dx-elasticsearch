@@ -23,6 +23,7 @@ import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
 import org.apache.lucene.search.spell.LevensteinDistance;
 import org.apache.lucene.util.CollectionUtil;
+import org.apache.lucene.util.Constants;
 import org.bouncycastle.bcpg.ArmoredInputStream;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.openpgp.PGPException;
@@ -800,6 +801,9 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
     private void installPlugin(Terminal terminal, boolean isBatch, Path tmpRoot,
                                Environment env, List<Path> deleteOnFailure) throws Exception {
         final PluginInfo info = loadPluginInfo(terminal, tmpRoot, env);
+
+        checkCanInstallationProceed(terminal, Build.CURRENT.flavor(), info);
+
         // read optional security policy (extra permissions), if it exists, confirm or warn the user
         Path policy = tmpRoot.resolve(PluginInfo.ES_PLUGIN_POLICY);
         final Set<String> permissions;
@@ -842,7 +846,10 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
         Files.walkFileTree(destination, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) throws IOException {
-                if ("bin".equals(file.getParent().getFileName().toString())) {
+                final String parentDirName = file.getParent().getFileName().toString();
+                if ("bin".equals(parentDirName)
+                    // "MacOS" is an alternative to "bin" on macOS
+                    || (Constants.MAC_OS_X && "MacOS".equals(parentDirName))) {
                     setFileAttributes(file, BIN_FILES_PERMS);
                 } else {
                     setFileAttributes(file, PLUGIN_FILES_PERMS);
@@ -946,4 +953,24 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
         IOUtils.rm(pathsToDeleteOnShutdown.toArray(new Path[pathsToDeleteOnShutdown.size()]));
     }
 
+    static void checkCanInstallationProceed(Terminal terminal, Build.Flavor flavor, PluginInfo info) throws Exception {
+        if (info.isLicensed() == false) {
+            return;
+        }
+
+        if (flavor == Build.Flavor.DEFAULT) {
+            return;
+        }
+
+        Arrays.asList(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+            "@            ERROR: This is a licensed plugin             @",
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+            "",
+            "This plugin is covered by the Elastic license, but this",
+            "installation of Elasticsearch is: [" + flavor + "]."
+        ).forEach(terminal::println);
+
+        throw new UserException(ExitCodes.NOPERM, "Plugin license is incompatible with [" + flavor + "] installation");
+    }
 }

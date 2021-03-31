@@ -118,8 +118,8 @@ GET _cat/health?v
 --------------------------------------------------
 // CONSOLE
 
-Wait for the `status` column to switch from `yellow` to `green`. Once the
-node is `green`, all primary and replica shards have been allocated.
+Wait for the `status` column to switch to `green`. Once the node is `green`, all
+primary and replica shards have been allocated.
 
 [IMPORTANT]
 ====================================================
@@ -158,7 +158,20 @@ recovery completes.
 --
 
 When  the node has recovered and the cluster is stable, repeat these steps
-for each node that needs to be updated.
+for each node that needs to be updated. You can monitor the health of the cluster
+with a <<cat-health,`_cat/health`>> request:
+
+[source,console]
+--------------------------------------------------
+GET /_cat/health?v
+--------------------------------------------------
+
+And check which nodes have been upgraded with a <<cat-nodes,`_cat/nodes`>> request:
+
+[source,console]
+--------------------------------------------------
+GET /_cat/nodes?h=ip,name,version&v
+--------------------------------------------------
 
 --
 

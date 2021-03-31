@@ -55,6 +55,7 @@ import java.util.function.Supplier;
 
 import static org.elasticsearch.xpack.ccr.action.AutoFollowCoordinator.AutoFollower.cleanFollowedRemoteIndices;
 import static org.elasticsearch.xpack.ccr.action.AutoFollowCoordinator.AutoFollower.recordLeaderIndexAsFollowFunction;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
@@ -116,6 +117,7 @@ public class AutoFollowCoordinatorTests extends ESTestCase {
                 assertThat(followRequest.getRemoteCluster(), equalTo("remote"));
                 assertThat(followRequest.getLeaderIndex(), equalTo("logs-20190101"));
                 assertThat(followRequest.getFollowerIndex(), equalTo("logs-20190101"));
+                assertThat(followRequest.masterNodeTimeout(), equalTo(TimeValue.MAX_VALUE));
                 successHandler.run();
             }
 
@@ -234,6 +236,7 @@ public class AutoFollowCoordinatorTests extends ESTestCase {
                 assertThat(followRequest.getRemoteCluster(), equalTo("remote"));
                 assertThat(followRequest.getLeaderIndex(), equalTo("logs-20190101"));
                 assertThat(followRequest.getFollowerIndex(), equalTo("logs-20190101"));
+                assertThat(followRequest.masterNodeTimeout(), equalTo(TimeValue.MAX_VALUE));
                 successHandler.run();
             }
 
@@ -289,6 +292,7 @@ public class AutoFollowCoordinatorTests extends ESTestCase {
                                  Runnable successHandler,
                                  Consumer<Exception> failureHandler) {
                 assertThat(followRequest.getRemoteCluster(), equalTo("remote"));
+                assertThat(followRequest.masterNodeTimeout(), equalTo(TimeValue.MAX_VALUE));
                 assertThat(followRequest.getLeaderIndex(), equalTo("logs-20190101"));
                 assertThat(followRequest.getFollowerIndex(), equalTo("logs-20190101"));
                 failureHandler.accept(failure);
@@ -569,18 +573,18 @@ public class AutoFollowCoordinatorTests extends ESTestCase {
 
         autoFollowCoordinator.updateStats(Arrays.asList(
             new AutoFollowCoordinator.AutoFollowResult("_alias1",
-                Collections.singletonList(Tuple.tuple(new Index("index1", "_na_"), new RuntimeException("error")))),
+                Collections.singletonList(Tuple.tuple(new Index("index1", "_na_"), new RuntimeException("error-1")))),
             new AutoFollowCoordinator.AutoFollowResult("_alias2",
-                Collections.singletonList(Tuple.tuple(new Index("index2", "_na_"), new RuntimeException("error"))))
+                Collections.singletonList(Tuple.tuple(new Index("index2", "_na_"), new RuntimeException("error-2"))))
         ));
         autoFollowStats = autoFollowCoordinator.getStats();
         assertThat(autoFollowStats.getNumberOfFailedFollowIndices(), equalTo(2L));
         assertThat(autoFollowStats.getNumberOfFailedRemoteClusterStateRequests(), equalTo(1L));
         assertThat(autoFollowStats.getNumberOfSuccessfulFollowIndices(), equalTo(0L));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().size(), equalTo(3));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1").v2().getCause().getMessage(), equalTo("error"));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1:index1").v2().getCause().getMessage(), equalTo("error"));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias2:index2").v2().getCause().getMessage(), equalTo("error"));
+        assertThat(autoFollowStats.getRecentAutoFollowErrors().size(), equalTo(2));
+        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1"), nullValue());
+        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1:index1").v2().getCause().getMessage(), equalTo("error-1"));
+        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias2:index2").v2().getCause().getMessage(), equalTo("error-2"));
 
         autoFollowCoordinator.updateStats(Arrays.asList(
             new AutoFollowCoordinator.AutoFollowResult("_alias1",
@@ -592,10 +596,8 @@ public class AutoFollowCoordinatorTests extends ESTestCase {
         assertThat(autoFollowStats.getNumberOfFailedFollowIndices(), equalTo(2L));
         assertThat(autoFollowStats.getNumberOfFailedRemoteClusterStateRequests(), equalTo(1L));
         assertThat(autoFollowStats.getNumberOfSuccessfulFollowIndices(), equalTo(2L));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().size(), equalTo(3));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1").v2().getCause().getMessage(), equalTo("error"));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias1:index1").v2().getCause().getMessage(), equalTo("error"));
-        assertThat(autoFollowStats.getRecentAutoFollowErrors().get("_alias2:index2").v2().getCause().getMessage(), equalTo("error"));
+        assertThat(autoFollowStats.getRecentAutoFollowErrors().keySet(), empty());
+
     }
 
     public void testUpdateAutoFollowers() {

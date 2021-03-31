@@ -35,7 +35,7 @@ publishing {
 archivesBaseName = 'elasticsearch'
 
 // we want to keep the JDKs in our IDEs set to JDK 8 until minimum JDK is bumped to 9 so we do not include this source set in our IDEs
-if (!isEclipse && !isIdea) {
+if (!isEclipse) {
   sourceSets {
     java9 {
       java {
@@ -43,11 +43,11 @@ if (!isEclipse && !isIdea) {
       }
     }
   }
-  
+
   configurations {
     java9Compile.extendsFrom(compile)
   }
-  
+
   dependencies {
     java9Compile sourceSets.main.output
   }
@@ -123,31 +123,17 @@ dependencies {
   // repackaged jna with native bits linked against all elastic supported platforms
   compile "org.elasticsearch:jna:${versions.jna}"
 
-  if (!isEclipse && !isIdea) {
+  if (!isEclipse) {
     java9Compile sourceSets.main.output
   }
 
-  if (isEclipse == false || project.path == ":server-tests") {
-    testCompile("org.elasticsearch.test:framework:${version}") {
-      // tests use the locally compiled version of server
-      exclude group: 'org.elasticsearch', module: 'elasticsearch'
-    }
+  testCompile(project(":test:framework")) {
+    // tests use the locally compiled version of server
+    exclude group: 'org.elasticsearch', module: 'elasticsearch'
   }
+
   testCompile 'com.google.jimfs:jimfs:1.1'
   testCompile 'com.google.guava:guava:18.0'
-}
-
-if (isEclipse) {
-  // in eclipse the project is under a fake root, we need to change around the source sets
-  sourceSets {
-    if (project.path == ":server") {
-      main.java.srcDirs = ['java']
-      main.resources.srcDirs = ['resources']
-    } else {
-      test.java.srcDirs = ['java']
-      test.resources.srcDirs = ['resources']
-    }
-  }
 }
 
 compileJava.options.compilerArgs << "-Xlint:-cast,-deprecation,-rawtypes,-try,-unchecked"
@@ -164,6 +150,8 @@ check.dependsOn(testScriptDocValuesMissingV7Behaviour)
 unitTest {
   // these are tested explicitly in separate test tasks
   exclude '**/*ScriptDocValuesMissingV7BehaviourTests.class'
+  jvmArg '-Djava.locale.providers=COMPAT'
+
 }
 
 forbiddenPatterns {
@@ -352,7 +340,7 @@ if (isEclipse == false || project.path == ":server-tests") {
   check.dependsOn integTest
   integTest.mustRunAfter test
   task internalClusterTest {
-     dependsOn integTest    
+     dependsOn integTest
   }
 }
 

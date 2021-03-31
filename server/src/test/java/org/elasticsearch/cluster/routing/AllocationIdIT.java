@@ -135,17 +135,13 @@ public class AllocationIdIT extends ESIntegTestCase {
             assertThat(shardRouting.unassignedInfo().getReason(), equalTo(UnassignedInfo.Reason.ALLOCATION_FAILED));
         });
 
+        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(node1));
         try(Store store = new Store(shardId, indexSettings, new SimpleFSDirectory(indexPath), new DummyShardLock(shardId))) {
             store.removeCorruptionMarker();
         }
+        node1 = internalCluster().startNode();
 
         // index is red: no any shard is allocated (allocation id is a fake id that does not match to anything)
-        checkHealthStatus(indexName, ClusterHealthStatus.RED);
-        checkNoValidShardCopy(indexName, shardId);
-
-        internalCluster().restartNode(node1, InternalTestCluster.EMPTY_CALLBACK);
-
-        // index is still red due to mismatch of allocation id
         checkHealthStatus(indexName, ClusterHealthStatus.RED);
         checkNoValidShardCopy(indexName, shardId);
 
@@ -190,9 +186,7 @@ public class AllocationIdIT extends ESIntegTestCase {
     }
 
     private Path getIndexPath(String nodeName, ShardId shardId) {
-        final Set<Path> indexDirs = RemoveCorruptedShardDataCommandIT.getDirs(nodeName, shardId, ShardPath.INDEX_FOLDER_NAME);
-        assertThat(indexDirs, hasSize(1));
-        return indexDirs.iterator().next();
+        return RemoveCorruptedShardDataCommandIT.getPathToShardData(nodeName, shardId, ShardPath.INDEX_FOLDER_NAME);
     }
 
     private Set<String> getAllocationIds(String indexName) {
@@ -209,8 +203,10 @@ public class AllocationIdIT extends ESIntegTestCase {
 
     private String historyUUID(String node, String indexName) {
         final ShardStats[] shards = client(node).admin().indices().prepareStats(indexName).clear().get().getShards();
+        final String nodeId = client(node).admin().cluster().prepareState().get().getState().nodes().resolveNode(node).getId();
         assertThat(shards.length, greaterThan(0));
         final Set<String> historyUUIDs = Arrays.stream(shards)
+            .filter(shard -> shard.getShardRouting().currentNodeId().equals(nodeId))
             .map(shard -> shard.getCommitStats().getUserData().get(Engine.HISTORY_UUID_KEY))
             .collect(Collectors.toSet());
         assertThat(historyUUIDs, hasSize(1));

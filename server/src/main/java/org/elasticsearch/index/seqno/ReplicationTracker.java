@@ -271,22 +271,25 @@ public class ReplicationTracker extends AbstractIndexShardComponent implements L
      * @param retainingSequenceNumber the retaining sequence number
      * @param source                  the source of the retention lease
      * @return the renewed retention lease
-     * @throws IllegalArgumentException if the specified retention lease does not exist
+     * @throws RetentionLeaseNotFoundException if the specified retention lease does not exist
+     * @throws IllegalArgumentException        if the new retaining sequence number is lower than
+     *                                         the retaining sequence number of the current retention lease.
      */
     public synchronized RetentionLease renewRetentionLease(final String id, final long retainingSequenceNumber, final String source) {
         assert primaryMode;
-        if (retentionLeases.contains(id) == false) {
+        final RetentionLease existingRetentionLease = retentionLeases.get(id);
+        if (existingRetentionLease == null) {
             throw new RetentionLeaseNotFoundException(id);
         }
+        if (retainingSequenceNumber < existingRetentionLease.retainingSequenceNumber()) {
+            throw new IllegalArgumentException(
+                "the current retention lease with [" + id + "]" +
+                    " is retaining a higher sequence number [" + existingRetentionLease.retainingSequenceNumber() + "]" +
+                    " than the new retaining sequence number [" + retainingSequenceNumber + "] from [" + source + "]"
+            );
+        }
         final RetentionLease retentionLease =
-                new RetentionLease(id, retainingSequenceNumber, currentTimeMillisSupplier.getAsLong(), source);
-        final RetentionLease existingRetentionLease = retentionLeases.get(id);
-        assert existingRetentionLease != null;
-        assert existingRetentionLease.retainingSequenceNumber() <= retentionLease.retainingSequenceNumber() :
-                "retention lease renewal for [" + id + "]"
-                        + " from [" + source + "]"
-                        + " renewed a lower retaining sequence number [" + retentionLease.retainingSequenceNumber() + "]"
-                        + " than the current lease retaining sequence number [" + existingRetentionLease.retainingSequenceNumber() + "]";
+            new RetentionLease(id, retainingSequenceNumber, currentTimeMillisSupplier.getAsLong(), source);
         retentionLeases = new RetentionLeases(
                 operationPrimaryTerm,
                 retentionLeases.version() + 1,
@@ -340,7 +343,10 @@ public class ReplicationTracker extends AbstractIndexShardComponent implements L
      * @throws IOException if an I/O exception occurs reading the retention leases
      */
     public RetentionLeases loadRetentionLeases(final Path path) throws IOException {
-        final RetentionLeases retentionLeases = RetentionLeases.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, path);
+        final RetentionLeases retentionLeases;
+        synchronized (retentionLeasePersistenceLock) {
+            retentionLeases = RetentionLeases.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, path);
+        }
 
         // TODO after backporting we expect this never to happen in 8.x, so adjust this to throw an exception instead.
         assert Version.CURRENT.major <= 8 : "throw an exception instead of returning EMPTY on null";

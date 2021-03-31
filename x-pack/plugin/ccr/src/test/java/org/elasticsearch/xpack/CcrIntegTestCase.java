@@ -10,6 +10,7 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.elasticsearch.action.admin.cluster.node.hotthreads.NodeHotThreads;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksAction;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksRequest;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksResponse;
@@ -42,6 +43,7 @@ import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.network.NetworkModule;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.core.internal.io.IOUtils;
@@ -76,6 +78,7 @@ import org.elasticsearch.test.NodeConfigurationSource;
 import org.elasticsearch.test.TestCluster;
 import org.elasticsearch.test.discovery.TestZenDiscovery;
 import org.elasticsearch.test.transport.MockTransportService;
+import org.elasticsearch.transport.RemoteClusterConnection;
 import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xpack.ccr.CcrSettings;
 import org.elasticsearch.xpack.ccr.LocalStateCcr;
@@ -139,7 +142,11 @@ public abstract class CcrIntegTestCase extends ESTestCase {
     }
 
     protected Settings followerClusterSettings() {
-        return Settings.EMPTY;
+        final Settings.Builder builder = Settings.builder();
+        if (randomBoolean()) {
+            builder.put(RemoteClusterConnection.REMOTE_MAX_PENDING_CONNECTION_LISTENERS.getKey(), randomIntBetween(1, 100));
+        }
+        return builder.build();
     }
 
     @Before
@@ -325,7 +332,7 @@ public abstract class CcrIntegTestCase extends ESTestCase {
 
     protected final ClusterHealthStatus ensureFollowerGreen(boolean waitForNoInitializingShards, String... indices) {
         logger.info("ensure green follower indices {}", Arrays.toString(indices));
-        return ensureColor(clusterGroup.followerCluster, ClusterHealthStatus.GREEN, TimeValue.timeValueSeconds(30),
+        return ensureColor(clusterGroup.followerCluster, ClusterHealthStatus.GREEN, TimeValue.timeValueSeconds(60),
             waitForNoInitializingShards, indices);
     }
 
@@ -347,16 +354,32 @@ public abstract class CcrIntegTestCase extends ESTestCase {
 
         ClusterHealthResponse actionGet = testCluster.client().admin().cluster().health(healthRequest).actionGet();
         if (actionGet.isTimedOut()) {
-            logger.info("{} timed out, cluster state:\n{}\n{}",
+            logger.info("{} timed out: " +
+                    "\nleader cluster state:\n{}" +
+                    "\nleader cluster hot threads:\n{}" +
+                    "\nleader cluster tasks:\n{}" +
+                    "\nfollower cluster state:\n{}" +
+                    "\nfollower cluster hot threads:\n{}" +
+                    "\nfollower cluster tasks:\n{}",
                 method,
-                testCluster.client().admin().cluster().prepareState().get().getState(),
-                testCluster.client().admin().cluster().preparePendingClusterTasks().get());
+                leaderClient().admin().cluster().prepareState().get().getState(),
+                getHotThreads(leaderClient()),
+                leaderClient().admin().cluster().preparePendingClusterTasks().get(),
+                followerClient().admin().cluster().prepareState().get().getState(),
+                getHotThreads(followerClient()),
+                followerClient().admin().cluster().preparePendingClusterTasks().get()
+            );
             fail("timed out waiting for " + color + " state");
         }
         assertThat("Expected at least " + clusterHealthStatus + " but got " + actionGet.getStatus(),
             actionGet.getStatus().value(), lessThanOrEqualTo(clusterHealthStatus.value()));
         logger.debug("indices {} are {}", indices.length == 0 ? "[_all]" : indices, color);
         return actionGet.getStatus();
+    }
+
+    static String getHotThreads(Client client) {
+        return client.admin().cluster().prepareNodesHotThreads().setThreads(99999).setIgnoreIdleThreads(false)
+            .get().getNodes().stream().map(NodeHotThreads::getHotThreads).collect(Collectors.joining("\n"));
     }
 
     protected final Index resolveLeaderIndex(String index) {
@@ -475,6 +498,8 @@ public abstract class CcrIntegTestCase extends ESTestCase {
         request.setFollowerIndex(followerIndex);
         request.getParameters().setMaxRetryDelay(TimeValue.timeValueMillis(10));
         request.getParameters().setReadPollTimeout(TimeValue.timeValueMillis(10));
+        request.getParameters().setMaxReadRequestSize(new ByteSizeValue(between(1, 32 * 1024 * 1024)));
+        request.getParameters().setMaxReadRequestOperationCount(between(1, 10000));
         request.waitForActiveShards(waitForActiveShards);
         return request;
     }

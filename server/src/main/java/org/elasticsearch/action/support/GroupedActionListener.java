@@ -72,7 +72,13 @@ public final class GroupedActionListener<T> implements ActionListener<T> {
     @Override
     public void onFailure(Exception e) {
         if (failure.compareAndSet(null, e) == false) {
-            failure.get().addSuppressed(e);
+            failure.accumulateAndGet(e, (current, update) -> {
+                // we have to avoid self-suppression!
+                if (update != current) {
+                    current.addSuppressed(update);
+                }
+                return current;
+            });
         }
         if (countDown.countDown()) {
             delegate.onFailure(failure.get());

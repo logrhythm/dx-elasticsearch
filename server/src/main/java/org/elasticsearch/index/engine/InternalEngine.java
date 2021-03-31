@@ -179,7 +179,8 @@ public class InternalEngine extends Engine {
         this.uidField = engineConfig.getIndexSettings().isSingleType() ? IdFieldMapper.NAME : UidFieldMapper.NAME;
         final TranslogDeletionPolicy translogDeletionPolicy = new TranslogDeletionPolicy(
                 engineConfig.getIndexSettings().getTranslogRetentionSize().getBytes(),
-                engineConfig.getIndexSettings().getTranslogRetentionAge().getMillis()
+                engineConfig.getIndexSettings().getTranslogRetentionAge().getMillis(),
+                engineConfig.getIndexSettings().getTranslogRetentionTotalFiles()
         );
         store.incRef();
         IndexWriter writer = null;
@@ -261,10 +262,14 @@ public class InternalEngine extends Engine {
             // Thus, we need to restore the LocalCheckpointTracker bit by bit to ensure the consistency between LocalCheckpointTracker and
             // Lucene index. This is not the only solution since we can bootstrap max_seq_no_of_updates with max_seq_no of the commit to
             // disable the MSU optimization during recovery. Here we prefer to maintain the consistency of LocalCheckpointTracker.
-            if (localCheckpoint < maxSeqNo && engineConfig.getIndexSettings().isSoftDeleteEnabled()) {
+            // The max_seq_no of Lucene commit in the old indices might be smaller than seq_no of some documents in the commit.
+            // We have to rebuild the LocalCheckpointTracker for those indices. See https://github.com/elastic/elasticsearch/pull/38879.
+            // Note that this bug affects only indices created between 6.5.0 and 6.6.1 with soft-deletes is explicitly enabled.
+            final boolean mustRebuild = engineConfig.getIndexSettings().getIndexVersionCreated().before(Version.V_6_6_2);
+            if (engineConfig.getIndexSettings().isSoftDeleteEnabled() && (localCheckpoint < maxSeqNo || mustRebuild)) {
                 try (Searcher searcher = searcherSupplier.get()) {
-                    Lucene.scanSeqNosInReader(searcher.getDirectoryReader(), localCheckpoint + 1, maxSeqNo,
-                        tracker::markSeqNoAsCompleted);
+                    final long toSeqNo = mustRebuild ? Long.MAX_VALUE : maxSeqNo;
+                    Lucene.scanSeqNosInReader(searcher.getDirectoryReader(), localCheckpoint + 1, toSeqNo, tracker::markSeqNoAsCompleted);
                 }
             }
             return tracker;
@@ -670,7 +675,12 @@ public class InternalEngine extends Engine {
                             trackTranslogLocation.set(true);
                         }
                     }
-                    refresh("realtime_get", SearcherScope.INTERNAL);
+                    if (versionValue.seqNo != SequenceNumbers.UNASSIGNED_SEQ_NO) {
+                        assert versionValue.seqNo >= 0 : versionValue;
+                        refreshIfNeeded("realtime_get", versionValue.seqNo);
+                    } else {
+                        refresh("realtime_get", SearcherScope.INTERNAL);
+                    }
                 }
                 scope = SearcherScope.INTERNAL;
             } else {
@@ -955,7 +965,11 @@ public class InternalEngine extends Engine {
             }
         } catch (RuntimeException | IOException e) {
             try {
-                maybeFailEngine("index", e);
+                if (e instanceof AlreadyClosedException == false && treatDocumentFailureAsTragicError(index)) {
+                    failEngine("index id[" + index.id() + "] origin[" + index.origin() + "] seq#[" + index.seqNo() + "]", e);
+                } else {
+                    maybeFailEngine("index id[" + index.id() + "] origin[" + index.origin() + "] seq#[" + index.seqNo() + "]", e);
+                }
             } catch (Exception inner) {
                 e.addSuppressed(inner);
             }
@@ -1111,7 +1125,8 @@ public class InternalEngine extends Engine {
             }
             return new IndexResult(plan.versionForIndexing, index.primaryTerm(), plan.seqNoForIndexing, plan.currentNotFoundOrDeleted);
         } catch (Exception ex) {
-            if (indexWriter.getTragicException() == null) {
+            if (ex instanceof AlreadyClosedException == false &&
+                indexWriter.getTragicException() == null && treatDocumentFailureAsTragicError(index) == false) {
                 /* There is no tragic event recorded so this must be a document failure.
                  *
                  * The handling inside IW doesn't guarantee that an tragic / aborting exception
@@ -1130,6 +1145,16 @@ public class InternalEngine extends Engine {
                 throw ex;
             }
         }
+    }
+
+    /**
+     * Whether we should treat any document failure as tragic error.
+     * If we hit any failure while processing an indexing on a replica, we should treat that error as tragic and fail the engine.
+     * However, we prefer to fail a request individually (instead of a shard) if we hit a document failure on the primary.
+     */
+    private boolean treatDocumentFailureAsTragicError(Index index) {
+        // TODO: can we enable this all origins except primary on the leader?
+        return index.origin() == Operation.Origin.REPLICA;
     }
 
     /**
@@ -1813,6 +1838,7 @@ public class InternalEngine extends Engine {
                         refresh("version_table_flush", SearcherScope.INTERNAL);
                         translog.trimUnreferencedReaders();
                     } catch (AlreadyClosedException e) {
+                        failOnTragicEvent(e);
                         throw e;
                     } catch (Exception e) {
                         throw new FlushFailedEngineException(shardId, e);

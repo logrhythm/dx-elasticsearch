@@ -132,6 +132,7 @@ import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.index.translog.TranslogConfig;
 import org.elasticsearch.indices.breaker.NoneCircuitBreakerService;
 import org.elasticsearch.test.IndexSettingsModule;
+import org.elasticsearch.test.VersionUtils;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
 
@@ -157,6 +158,7 @@ import java.util.Set;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Phaser;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -1692,18 +1694,26 @@ public class InternalEngineTests extends EngineTestCase {
             settings.put(IndexSettings.INDEX_SOFT_DELETES_RETENTION_OPERATIONS_SETTING.getKey(), 0);
             indexSettings.updateIndexMetaData(IndexMetaData.builder(defaultSettings.getIndexMetaData()).settings(settings).build());
             engine.onSettingsChanged();
-            // If the global checkpoint equals to the local checkpoint, the next force-merge will be a noop
-            // because all deleted documents are expunged in the previous force-merge already. We need to flush
-            // a new segment to make merge happen so that we can verify that all _recovery_source are pruned.
-            if (globalCheckpoint.get() == engine.getLocalCheckpoint() && liveDocs.isEmpty() == false) {
-                String deleteId = randomFrom(liveDocs);
-                engine.delete(new Engine.Delete("test", deleteId, newUid(deleteId), primaryTerm.get()));
-                liveDocsWithSource.remove(deleteId);
-                liveDocs.remove(deleteId);
-                engine.flush();
+            // If we already merged down to 1 segment, then the next force-merge will be a noop. We need to add an extra segment to make
+            // merges happen so we can verify that _recovery_source are pruned. See: https://github.com/elastic/elasticsearch/issues/41628.
+            final int numSegments;
+            try (Engine.Searcher searcher = engine.acquireSearcher("test", Engine.SearcherScope.INTERNAL)) {
+                numSegments = searcher.getDirectoryReader().leaves().size();
             }
-            globalCheckpoint.set(engine.getLocalCheckpoint());
-            engine.syncTranslog();
+            if (numSegments == 1) {
+                boolean useRecoverySource = randomBoolean() || omitSourceAllTheTime;
+                ParsedDocument doc = testParsedDocument("dummy", null, testDocument(), B_1, null, useRecoverySource);
+                engine.index(indexForDoc(doc));
+                if (useRecoverySource == false) {
+                    liveDocsWithSource.add(doc.id());
+                }
+                engine.syncTranslog();
+                globalCheckpoint.set(engine.getLocalCheckpoint());
+                engine.flush(randomBoolean(), true);
+            } else {
+                globalCheckpoint.set(engine.getLocalCheckpoint());
+                engine.syncTranslog();
+            }
             engine.forceMerge(true, 1, false, false, false);
             assertConsistentHistoryBetweenTranslogAndLuceneIndex(engine, mapperService);
             assertThat(readAllOperationsInLucene(engine, mapperService), hasSize(liveDocsWithSource.size()));
@@ -2352,7 +2362,7 @@ public class InternalEngineTests extends EngineTestCase {
             engine.index(indexForDoc(doc));
             engine.flush();
             assertTrue(mockAppender.sawIndexWriterMessage);
-
+            engine.close();
         } finally {
             Loggers.removeAppender(rootLogger, mockAppender);
             mockAppender.stop();
@@ -2869,19 +2879,15 @@ public class InternalEngineTests extends EngineTestCase {
         // test that we can force start the engine , even if the translog is missing.
         engine.close();
         // fake a new translog, causing the engine to point to a missing one.
-        final long primaryTerm = randomNonNegativeLong();
-        Translog translog = createTranslog(() -> primaryTerm);
+        final long newPrimaryTerm = randomLongBetween(0L, primaryTerm.get());
+        final Translog translog = createTranslog(() -> newPrimaryTerm);
         long id = translog.currentFileGeneration();
         translog.close();
         IOUtils.rm(translog.location().resolve(Translog.getFilename(id)));
-        try {
-            engine = createEngine(store, primaryTranslogDir);
-            fail("engine shouldn't start without a valid translog id");
-        } catch (EngineCreationFailureException ex) {
-            // expected
-        }
+        expectThrows(EngineCreationFailureException.class, "engine shouldn't start without a valid translog id",
+            () -> createEngine(store, primaryTranslogDir));
         // when a new translog is created it should be ok
-        final String translogUUID = Translog.createEmptyTranslog(primaryTranslogDir, UNASSIGNED_SEQ_NO, shardId, primaryTerm);
+        final String translogUUID = Translog.createEmptyTranslog(primaryTranslogDir, UNASSIGNED_SEQ_NO, shardId, newPrimaryTerm);
         store.associateIndexWithNewTranslog(translogUUID);
         EngineConfig config = config(defaultSettings, store, primaryTranslogDir, newMergePolicy(), null);
         engine = new InternalEngine(config);
@@ -4307,11 +4313,15 @@ public class InternalEngineTests extends EngineTestCase {
      * Verifies that a segment containing only no-ops can be used to look up _version and _seqno.
      */
     public void testSegmentContainsOnlyNoOps() throws Exception {
-        Engine.NoOpResult noOpResult = engine.noOp(new Engine.NoOp(1, primaryTerm.get(),
+        final long seqNo = randomLongBetween(0, 1000);
+        final long term = this.primaryTerm.get();
+        Engine.NoOpResult noOpResult = engine.noOp(new Engine.NoOp(seqNo, term,
             randomFrom(Engine.Operation.Origin.values()), randomNonNegativeLong(), "test"));
         assertThat(noOpResult.getFailure(), nullValue());
+        assertThat(noOpResult.getSeqNo(), equalTo(seqNo));
+        assertThat(noOpResult.getTerm(), equalTo(term));
         engine.refresh("test");
-        Engine.DeleteResult deleteResult = engine.delete(replicaDeleteForDoc("id", 1, 2, randomNonNegativeLong()));
+        Engine.DeleteResult deleteResult = engine.delete(replicaDeleteForDoc("id", 1, seqNo + between(1, 1000), randomNonNegativeLong()));
         assertThat(deleteResult.getFailure(), nullValue());
         engine.refresh("test");
     }
@@ -4337,8 +4347,11 @@ public class InternalEngineTests extends EngineTestCase {
                     assertThat(delete.getFailure(), nullValue());
                     break;
                 case NO_OP:
-                    Engine.NoOpResult noOp = engine.noOp(new Engine.NoOp(i, primaryTerm.get(),
+                    long seqNo = i;
+                    Engine.NoOpResult noOp = engine.noOp(new Engine.NoOp(seqNo, primaryTerm.get(),
                         randomFrom(Engine.Operation.Origin.values()), randomNonNegativeLong(), ""));
+                    assertThat(noOp.getTerm(), equalTo(primaryTerm.get()));
+                    assertThat(noOp.getSeqNo(), equalTo(seqNo));
                     assertThat(noOp.getFailure(), nullValue());
                     break;
                 default:
@@ -5632,6 +5645,61 @@ public class InternalEngineTests extends EngineTestCase {
         }
     }
 
+    /**
+     * Simulate a bug in https://github.com/elastic/elasticsearch/pull/38879 where the max_seq_no
+     * of the index commit can be smaller than seq_no of some documents in the commit.
+     */
+    public void testAlwaysRebuildLocalCheckpointForOldIndex() throws Exception {
+        Settings.Builder settings = Settings.builder()
+            .put(defaultSettings.getSettings())
+            .put(IndexMetaData.SETTING_VERSION_CREATED, VersionUtils.randomVersionBetween(random(), Version.V_6_5_0, Version.V_6_6_1))
+            .put(IndexSettings.INDEX_SOFT_DELETES_SETTING.getKey(), true);
+        final IndexMetaData indexMetaData = IndexMetaData.builder(defaultSettings.getIndexMetaData()).settings(settings).build();
+        final IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(indexMetaData);
+        Path translogPath = createTempDir();
+        List<Engine.Operation> operations = generateHistoryOnReplica(between(1, 500), randomBoolean(), randomBoolean(), randomBoolean());
+        final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
+        try (Store store = createStore()) {
+            EngineConfig config = config(indexSettings, store, translogPath, NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get);
+            final List<DocIdSeqNoAndTerm> docs;
+            try (InternalEngine engine = createEngine(config)) {
+                for (Engine.Operation op : operations) {
+                    applyOperation(engine, op);
+                    if (randomInt(100) < 10) {
+                        engine.flush();
+                        globalCheckpoint.set(randomLongBetween(globalCheckpoint.get(), engine.getLocalCheckpoint()));
+                    }
+                }
+                globalCheckpoint.set(randomLongBetween(globalCheckpoint.get(), engine.getLocalCheckpoint()));
+                engine.syncTranslog();
+                docs = getDocIds(engine, true);
+            }
+            trimUnsafeCommits(config);
+            // Simulate a bug in https://github.com/elastic/elasticsearch/pull/38879 where max_seq_no is smaller than seq_no of some docs.
+            if (randomBoolean()) {
+                IndexWriterConfig iwc = new IndexWriterConfig(null)
+                    .setSoftDeletesField(Lucene.SOFT_DELETES_FIELD)
+                    .setCommitOnClose(false)
+                    .setMergePolicy(NoMergePolicy.INSTANCE)
+                    .setOpenMode(IndexWriterConfig.OpenMode.APPEND);
+                try (IndexWriter writer = new IndexWriter(config.getStore().directory(), iwc)) {
+                    Map<String, String> userData = new HashMap<>();
+                    writer.getLiveCommitData().forEach(e -> userData.put(e.getKey(), e.getValue()));
+                    SequenceNumbers.CommitInfo commitInfo = SequenceNumbers.loadSeqNoInfoFromLuceneCommit(userData.entrySet());
+                    long maxSeqNo = randomLongBetween(commitInfo.localCheckpoint, commitInfo.maxSeqNo);
+                    userData.put(SequenceNumbers.MAX_SEQ_NO, Long.toString(maxSeqNo));
+                    writer.setLiveCommitData(userData.entrySet());
+                    writer.commit();
+                }
+            }
+            try (InternalEngine engine = new InternalEngine(config)) {
+                engine.reinitializeMaxSeqNoOfUpdatesOrDeletes();
+                engine.recoverFromTranslog(translogHandler, Long.MAX_VALUE);
+                assertThat(getDocIds(engine, true), equalTo(docs));
+            }
+        }
+    }
+
     public void testOpenSoftDeletesIndexWithSoftDeletesDisabled() throws Exception {
         try (Store store = createStore()) {
             Path translogPath = createTempDir();
@@ -5844,4 +5912,83 @@ public class InternalEngineTests extends EngineTestCase {
         }
     }
 
+    public void testRealtimeGetOnlyRefreshIfNeeded() throws Exception {
+        final AtomicInteger refreshCount = new AtomicInteger();
+        final ReferenceManager.RefreshListener refreshListener = new ReferenceManager.RefreshListener() {
+            @Override
+            public void beforeRefresh() {
+
+            }
+
+            @Override
+            public void afterRefresh(boolean didRefresh) {
+                if (didRefresh) {
+                    refreshCount.incrementAndGet();
+                }
+            }
+        };
+        try (Store store = createStore()) {
+            final EngineConfig config = config(defaultSettings, store, createTempDir(), newMergePolicy(), null,
+                refreshListener, null, null, engine.config().getCircuitBreakerService());
+            try (InternalEngine engine = createEngine(config)) {
+                int numDocs = randomIntBetween(10, 100);
+                Set<String> ids = new HashSet<>();
+                for (int i = 0; i < numDocs; i++) {
+                    String id = Integer.toString(i);
+                    engine.index(indexForDoc(createParsedDoc(id, null)));
+                    ids.add(id);
+                }
+                final int refreshCountBeforeGet = refreshCount.get();
+                Thread[] getters = new Thread[randomIntBetween(1, 4)];
+                Phaser phaser = new Phaser(getters.length + 1);
+                for (int t = 0; t < getters.length; t++) {
+                    getters[t] = new Thread(() -> {
+                        phaser.arriveAndAwaitAdvance();
+                        int iters = randomIntBetween(1, 10);
+                        for (int i = 0; i < iters; i++) {
+                            ParsedDocument doc = createParsedDoc(randomFrom(ids), null);
+                            try (Engine.GetResult getResult = engine.get(newGet(true, doc), engine::acquireSearcher)) {
+                                assertThat(getResult.exists(), equalTo(true));
+                                assertThat(getResult.docIdAndVersion(), notNullValue());
+                            }
+                        }
+                    });
+                    getters[t].start();
+                }
+                phaser.arriveAndAwaitAdvance();
+                for (int i = 0; i < numDocs; i++) {
+                    engine.index(indexForDoc(createParsedDoc("more-" + i, null)));
+                }
+                for (Thread getter : getters) {
+                    getter.join();
+                }
+                assertThat(refreshCount.get(), lessThanOrEqualTo(refreshCountBeforeGet + 1));
+            }
+        }
+    }
+
+    public void testHandleDocumentFailureOnReplica() throws Exception {
+        AtomicReference<IOException> addDocException = new AtomicReference<>();
+        IndexWriterFactory indexWriterFactory = (dir, iwc) -> new IndexWriter(dir, iwc) {
+            @Override
+            public long addDocument(Iterable<? extends IndexableField> doc) throws IOException {
+                final IOException ex = addDocException.getAndSet(null);
+                if (ex != null) {
+                    throw ex;
+                }
+                return super.addDocument(doc);
+            }
+        };
+        try (Store store = createStore();
+             InternalEngine engine = createEngine(defaultSettings, store, createTempDir(), NoMergePolicy.INSTANCE, indexWriterFactory)) {
+            final ParsedDocument doc = testParsedDocument("1", null, testDocumentWithTextField(), SOURCE, null);
+            Engine.Index index = new Engine.Index(newUid(doc), doc, randomNonNegativeLong(), primaryTerm.get(),
+                randomNonNegativeLong(), VersionType.EXTERNAL, REPLICA, System.nanoTime(), -1, false,
+                UNASSIGNED_SEQ_NO, UNASSIGNED_PRIMARY_TERM);
+            addDocException.set(new IOException("simulated"));
+            expectThrows(IOException.class, () -> engine.index(index));
+            assertTrue(engine.isClosed.get());
+            assertNotNull(engine.failedEngine.get());
+        }
+    }
 }

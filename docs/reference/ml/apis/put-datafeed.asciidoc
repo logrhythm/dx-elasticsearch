@@ -59,6 +59,11 @@ IMPORTANT:  You must use {kib} or this API to create a {dfeed}. Do not put a {df
 `indices` (required)::
   (array) An array of index names. Wildcards are supported. For example:
   `["it_ops_metrics", "server*"]`.
++
+--
+NOTE: If any indices are in remote clusters then `cluster.remote.connect` must
+not be set to `false` on any ML node.
+--
 
 `job_id` (required)::
  (string) A numerical character string that uniquely identifies the job.
@@ -100,7 +105,7 @@ see <<ml-datafeed-resource>>.
 
 If {es} {security-features} are enabled, you must have `manage_ml`, or `manage`
 cluster privileges to use this API. For more information, see
-{stack-ov}/security-privileges.html[Security Privileges].
+<<security-privileges>>.
 
 
 ==== Security integration

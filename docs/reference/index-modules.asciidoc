@@ -155,8 +155,15 @@ specific index module:
     allow writes and metadata changes.
 
 `index.blocks.read_only_allow_delete`::
-    Identical to `index.blocks.read_only` but allows deleting the index to free
-     up resources.
+
+Similar to `index.blocks.read_only`, but also allows deleting the index to
+make more resources available.
++
+Deleting documents from an index to release resources - rather than deleting
+the index itself - can increase the index size over time. When
+`index.blocks.read_only_allow_delete` is set to `true`, deleting documents is
+not permitted. However, deleting the index itself releases the read-only index
+block and makes resources available almost immediately.
 
 `index.blocks.read`::
 
@@ -164,8 +171,8 @@ specific index module:
 
 `index.blocks.write`::
 
-    Set to `true` to disable data write operations against the index. Unlike `read_only`, 
-    this setting does not affect metadata. For instance, you can close an index with a `write` 
+    Set to `true` to disable data write operations against the index. Unlike `read_only`,
+    this setting does not affect metadata. For instance, you can close an index with a `write`
     block, but not an index with a `read_only` block.
 
 `index.blocks.metadata`::

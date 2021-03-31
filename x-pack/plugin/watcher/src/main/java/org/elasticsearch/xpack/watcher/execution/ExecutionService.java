@@ -39,6 +39,7 @@ import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.index.engine.DocumentMissingException;
 import org.elasticsearch.index.engine.VersionConflictEngineException;
+import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.xpack.core.watcher.actions.ActionWrapper;
 import org.elasticsearch.xpack.core.watcher.actions.ActionWrapperResult;
 import org.elasticsearch.xpack.core.watcher.common.stats.Counters;
@@ -363,7 +364,8 @@ public class ExecutionService extends AbstractComponent {
 
         UpdateRequest updateRequest = new UpdateRequest(Watch.INDEX, Watch.DOC_TYPE, watch.id());
         updateRequest.doc(source);
-        boolean useSeqNoForCAS = clusterService.state().nodes().getMinNodeVersion().onOrAfter(Version.V_6_7_0);
+        boolean useSeqNoForCAS = clusterService.state().nodes().getMinNodeVersion().onOrAfter(Version.V_6_7_0)
+            && watch.getSourceSeqNo() != SequenceNumbers.UNASSIGNED_SEQ_NO;
         if (useSeqNoForCAS) {
             updateRequest.setIfSeqNo(watch.getSourceSeqNo());
             updateRequest.setIfPrimaryTerm(watch.getSourcePrimaryTerm());
@@ -429,7 +431,14 @@ public class ExecutionService extends AbstractComponent {
                             "Error storing watch history record for watch [{}] after thread pool rejection",
                             triggeredWatch.id()), exc);
                 }
-                deleteTrigger(triggeredWatch.id());
+                try {
+                    deleteTrigger(triggeredWatch.id());
+                } catch (Exception exc) {
+                    logger.error((Supplier<?>) () ->
+                        new ParameterizedMessage(
+                            "Error deleting entry from .triggered_watches for watch [{}] after thread pool rejection",
+                            triggeredWatch.id()), exc);
+                }
             }));
         }
     }

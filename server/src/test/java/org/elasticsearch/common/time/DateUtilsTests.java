@@ -34,6 +34,7 @@ public class DateUtilsTests extends ESTestCase {
     private static final Set<String> IGNORE = new HashSet<>(Arrays.asList(
         "Eire", "Europe/Dublin" // dublin timezone in joda does not account for DST
     ));
+
     public void testTimezoneIds() {
         assertNull(DateUtils.dateTimeZoneToZoneId(null));
         assertNull(DateUtils.zoneIdToDateTimeZone(null));

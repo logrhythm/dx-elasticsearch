@@ -20,6 +20,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
@@ -76,7 +77,7 @@ public final class FrozenEngine extends ReadOnlyEngine {
 
         boolean success = false;
         Directory directory = store.directory();
-        try (DirectoryReader reader = DirectoryReader.open(directory)) {
+        try (DirectoryReader reader = openDirectory(directory)) {
             canMatchReader = ElasticsearchDirectoryReader.wrap(new RewriteCachingDirectoryReader(directory, reader.leaves()),
                 config.getShardId());
             success = true;
@@ -86,6 +87,15 @@ public final class FrozenEngine extends ReadOnlyEngine {
             if (success == false) {
                 closeNoLock("failed on construction", new CountDownLatch(1));
             }
+        }
+    }
+
+    private DirectoryReader openDirectory(Directory directory) throws IOException {
+        final DirectoryReader reader = DirectoryReader.open(directory);
+        if (config().getIndexSettings().isSoftDeleteEnabled()) {
+            return new SoftDeletesDirectoryReaderWrapper(reader, Lucene.SOFT_DELETES_FIELD);
+        } else {
+            return reader;
         }
     }
 
@@ -159,7 +169,7 @@ public final class FrozenEngine extends ReadOnlyEngine {
                 for (ReferenceManager.RefreshListener listeners : config ().getInternalRefreshListener()) {
                     listeners.beforeRefresh();
                 }
-                reader = DirectoryReader.open(engineConfig.getStore().directory());
+                reader = openDirectory(engineConfig.getStore().directory());
                 processReaders(reader, null);
                 reader = lastOpenedReader = wrapReader(reader, Function.identity());
                 reader.getReaderCacheHelper().addClosedListener(this::onReaderClosed);
@@ -212,7 +222,7 @@ public final class FrozenEngine extends ReadOnlyEngine {
                 case "segments":
                 case "segments_stats":
                 case "completion_stats":
-                case "can_match": // special case for can_match phase - we use the cached point values reader
+                case CAN_MATCH_SEARCH_SOURCE: // special case for can_match phase - we use the cached point values reader
                     maybeOpenReader = false;
                     break;
                 default:
@@ -225,7 +235,7 @@ public final class FrozenEngine extends ReadOnlyEngine {
                 // we just hand out a searcher on top of an empty reader that we opened for the ReadOnlyEngine in the #open(IndexCommit)
                 // method. this is the case when we don't have a reader open right now and we get a stats call any other that falls in
                 // the category that doesn't trigger a reopen
-                if ("can_match".equals(source)) {
+                if (CAN_MATCH_SEARCH_SOURCE.equals(source)) {
                     canMatchReader.incRef();
                     return new Searcher(source, new IndexSearcher(canMatchReader), canMatchReader::decRef);
                 }

@@ -118,7 +118,7 @@ public class PluginsService {
         for (Class<? extends Plugin> pluginClass : classpathPlugins) {
             Plugin plugin = loadPlugin(pluginClass, settings, configPath);
             PluginInfo pluginInfo = new PluginInfo(pluginClass.getName(), "classpath plugin", "NA", Version.CURRENT, "1.8",
-                                                   pluginClass.getName(), Collections.emptyList(), false);
+                                                   pluginClass.getName(), Collections.emptyList(), false, false);
             if (logger.isTraceEnabled()) {
                 logger.trace("plugin loaded from classpath [{}]", pluginInfo);
             }
@@ -323,11 +323,13 @@ public class PluginsService {
         if (Files.exists(rootPath)) {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(rootPath)) {
                 for (Path plugin : stream) {
+                    final String fileName = plugin.getFileName().toString();
                     if (FileSystemUtils.isDesktopServicesStore(plugin) ||
-                        plugin.getFileName().toString().startsWith(".removing-")) {
+                        fileName.startsWith(".removing-") ||
+                        fileName.equals("quota-aware-fs")) {
                         continue;
                     }
-                    if (seen.add(plugin.getFileName().toString()) == false) {
+                    if (seen.add(fileName) == false) {
                         throw new IllegalStateException("duplicate plugin: " + plugin);
                     }
                     plugins.add(plugin);

@@ -11,8 +11,10 @@ import org.elasticsearch.xpack.sql.expression.Attribute;
 import org.elasticsearch.xpack.sql.expression.AttributeSet;
 import org.elasticsearch.xpack.sql.expression.Exists;
 import org.elasticsearch.xpack.sql.expression.Expression;
+import org.elasticsearch.xpack.sql.expression.ExpressionId;
 import org.elasticsearch.xpack.sql.expression.Expressions;
 import org.elasticsearch.xpack.sql.expression.FieldAttribute;
+import org.elasticsearch.xpack.sql.expression.NamedExpression;
 import org.elasticsearch.xpack.sql.expression.UnresolvedAttribute;
 import org.elasticsearch.xpack.sql.expression.function.Function;
 import org.elasticsearch.xpack.sql.expression.function.FunctionAttribute;
@@ -27,6 +29,12 @@ import org.elasticsearch.xpack.sql.expression.function.grouping.GroupingFunction
 import org.elasticsearch.xpack.sql.expression.function.grouping.GroupingFunctionAttribute;
 import org.elasticsearch.xpack.sql.expression.function.scalar.ScalarFunction;
 import org.elasticsearch.xpack.sql.expression.predicate.conditional.ConditionalFunction;
+import org.elasticsearch.xpack.sql.expression.predicate.fulltext.FullTextPredicate;
+import org.elasticsearch.xpack.sql.expression.predicate.logical.BinaryLogic;
+import org.elasticsearch.xpack.sql.expression.predicate.logical.Not;
+import org.elasticsearch.xpack.sql.expression.predicate.nulls.IsNotNull;
+import org.elasticsearch.xpack.sql.expression.predicate.nulls.IsNull;
+import org.elasticsearch.xpack.sql.expression.predicate.operator.comparison.BinaryComparison;
 import org.elasticsearch.xpack.sql.expression.predicate.operator.comparison.In;
 import org.elasticsearch.xpack.sql.plan.logical.Aggregate;
 import org.elasticsearch.xpack.sql.plan.logical.Distinct;
@@ -78,16 +86,16 @@ public final class Verifier {
     }
 
     static class Failure {
-        private final Node<?> source;
+        private final Node<?> node;
         private final String message;
 
-        Failure(Node<?> source, String message) {
-            this.source = source;
+        Failure(Node<?> node, String message) {
+            this.node = node;
             this.message = message;
         }
 
-        Node<?> source() {
-            return source;
+        Node<?> node() {
+            return node;
         }
 
         String message() {
@@ -96,7 +104,7 @@ public final class Verifier {
 
         @Override
         public int hashCode() {
-            return source.hashCode();
+            return Objects.hash(node);
         }
 
         @Override
@@ -110,7 +118,7 @@ public final class Verifier {
             }
 
             Verifier.Failure other = (Verifier.Failure) obj;
-            return Objects.equals(source, other.source);
+            return Objects.equals(node, other.node);
         }
 
         @Override
@@ -125,7 +133,7 @@ public final class Verifier {
 
     public Map<Node<?>, String> verifyFailures(LogicalPlan plan) {
         Collection<Failure> failures = verify(plan);
-        return failures.stream().collect(toMap(Failure::source, Failure::message));
+        return failures.stream().collect(toMap(Failure::node, Failure::message));
     }
 
     Collection<Failure> verify(LogicalPlan plan) {
@@ -231,6 +239,8 @@ public final class Verifier {
                 validateInExpression(p, localFailures);
                 validateConditional(p, localFailures);
 
+                checkFullTextSearchInSelect(plan, localFailures);
+
                 checkGroupingFunctionInGroupBy(p, localFailures);
                 checkFilterOnAggs(p, localFailures);
                 checkFilterOnGrouping(p, localFailures);
@@ -240,7 +250,7 @@ public final class Verifier {
                 }
 
                 checkForScoreInsideFunctions(p, localFailures);
-                checkNestedUsedInGroupByOrHaving(p, localFailures);
+                checkNestedUsedInGroupByOrHavingOrWhereOrOrderBy(p, localFailures);
 
                 // everything checks out
                 // mark the plan as analyzed
@@ -280,6 +290,17 @@ public final class Verifier {
         }
 
         return failures;
+    }
+
+    private void checkFullTextSearchInSelect(LogicalPlan plan, Set<Failure> localFailures) {
+        plan.forEachUp(p -> {
+            for (NamedExpression ne : p.projections()) {
+                ne.forEachUp((e) ->
+                        localFailures.add(fail(e, "Cannot use MATCH() or QUERY() full-text search " +
+                                "functions in the SELECT clause")),
+                        FullTextPredicate.class);
+            }
+        }, Project.class);
     }
 
     /**
@@ -678,17 +699,39 @@ public final class Verifier {
                 Function.class));
     }
 
-    private static void checkNestedUsedInGroupByOrHaving(LogicalPlan p, Set<Failure> localFailures) {
+    private static void checkNestedUsedInGroupByOrHavingOrWhereOrOrderBy(LogicalPlan p, Set<Failure> localFailures) {
+        // collect Attribute sources
+        // only Aliases are interesting since these are the only ones that hide expressions
+        // FieldAttribute for example are self replicating.
+        final Map<ExpressionId, Expression> collectRefs = new LinkedHashMap<>();
+        p.forEachUp(plan -> plan.forEachExpressionsUp(e -> {
+            if (e instanceof Alias) {
+                Alias a = (Alias) e;
+                collectRefs.put(a.id(), a.child());
+            }
+        }));
+        p.forEachDown(project -> project.projections().forEach(e -> collectRefs.putIfAbsent(e.id(), e)), Project.class);
+
         List<FieldAttribute> nested = new ArrayList<>();
-        Consumer<FieldAttribute> match = fa -> {
+        Consumer<FieldAttribute> matchNested = fa -> {
             if (fa.isNested()) {
                 nested.add(fa);
             }
         };
+        Consumer<Expression> checkForNested = e -> {
+            Expression expr = e;
+            if (e instanceof NamedExpression) {
+                expr = collectRefs.getOrDefault(((NamedExpression) e).id(), e);
+
+            }
+            expr.forEachUp(matchNested, FieldAttribute.class);
+        };
+
+        Consumer<ScalarFunction> checkForNestedInFunction =  f -> f.forEachDown(
+                arg -> arg.forEachUp(matchNested, FieldAttribute.class));
 
         // nested fields shouldn't be used in aggregates or having (yet)
-        p.forEachDown(a -> a.groupings().forEach(agg -> agg.forEachUp(match, FieldAttribute.class)), Aggregate.class);
-
+        p.forEachDown(a -> a.groupings().forEach(agg -> agg.forEachUp(checkForNested)), Aggregate.class);
         if (!nested.isEmpty()) {
             localFailures.add(
                     fail(nested.get(0), "Grouping isn't (yet) compatible with nested fields " + new AttributeSet(nested).names()));
@@ -696,15 +739,45 @@ public final class Verifier {
         }
         
         // check in having
-        p.forEachDown(f -> {
-            if (f.child() instanceof Aggregate) {
-                f.condition().forEachUp(match, FieldAttribute.class);
-            }
-        }, Filter.class);
-        
+        p.forEachDown(f -> f.forEachDown(a -> f.condition().forEachUp(checkForNested), Aggregate.class), Filter.class);
         if (!nested.isEmpty()) {
             localFailures.add(
                     fail(nested.get(0), "HAVING isn't (yet) compatible with nested fields " + new AttributeSet(nested).names()));
+            nested.clear();
+        }
+
+        // check in where (scalars not allowed)
+        p.forEachDown(f -> f.condition().forEachUp(e ->
+                e.forEachUp(sf -> {
+                    if (sf instanceof BinaryComparison == false &&
+                            sf instanceof IsNull == false &&
+                            sf instanceof IsNotNull == false &&
+                            sf instanceof Not== false &&
+                            sf instanceof BinaryLogic== false) {
+                        checkForNestedInFunction.accept(sf);
+                    }}, ScalarFunction.class)
+        ), Filter.class);
+        if (!nested.isEmpty()) {
+            localFailures.add(
+                    fail(nested.get(0), "WHERE isn't (yet) compatible with scalar functions on nested fields " +
+                            new AttributeSet(nested).names()));
+            nested.clear();
+        }
+
+        // check in order by (scalars not allowed)
+        p.forEachDown(ob -> ob.order().forEach(o -> o.forEachUp(e -> {
+                    Expression expr = e;
+                    if (e instanceof NamedExpression) {
+                        expr = collectRefs.getOrDefault(((NamedExpression) e).id(), e);
+
+                    }
+                    expr.forEachUp(checkForNestedInFunction, ScalarFunction.class);
+                }
+        )), OrderBy.class);
+        if (!nested.isEmpty()) {
+            localFailures.add(
+                    fail(nested.get(0), "ORDER BY isn't (yet) compatible with scalar functions on nested fields " +
+                            new AttributeSet(nested).names()));
         }
     }
 

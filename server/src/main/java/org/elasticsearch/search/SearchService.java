@@ -585,19 +585,31 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                     " not be allowed in the next major version by default. You can change the  [" +
                     MAX_OPEN_SCROLL_CONTEXT.getKey() + "] setting to use a greater default value or lower the number of" +
                     " scrolls that you need to run in parallel.");
-            } else if (openScrollContexts.get() >= maxOpenScrollContext) {
+            }
+            if (openScrollContexts.incrementAndGet() > maxOpenScrollContext) {
+                openScrollContexts.decrementAndGet();
                 throw new ElasticsearchException(
                     "Trying to create too many scroll contexts. Must be less than or equal to: [" +
                         maxOpenScrollContext + "]. " + "This limit can be set by changing the ["
                         + MAX_OPEN_SCROLL_CONTEXT.getKey() + "] setting.");
             }
         }
-
-        SearchContext context = createContext(request);
+        SearchContext context = null;
+        try {
+            context = createContext(request);
+            context.addReleasable(openScrollContexts::decrementAndGet, Lifetime.CONTEXT);
+        } finally {
+            if (context == null) {
+                openScrollContexts.decrementAndGet();
+            }
+        }
         onNewContext(context);
         boolean success = false;
         try {
             putContext(context);
+            // ensure that if we race against afterIndexRemoved, we free the context here.
+            // this is important to ensure store can be cleaned up, in particular if the search is a scroll with a long timeout.
+            indicesService.indexServiceSafe(request.shardId().getIndex());
             success = true;
             return context;
         } finally {
@@ -611,7 +623,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         boolean success = false;
         try {
             if (context.scrollContext() != null) {
-                openScrollContexts.incrementAndGet();
                 context.indexShard().getSearchOperationListener().onNewScrollContext(context);
             }
             context.indexShard().getSearchOperationListener().onNewContext(context);
@@ -724,7 +735,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         assert activeContexts.containsKey(context.id()) == false;
         context.indexShard().getSearchOperationListener().onFreeContext(context);
         if (context.scrollContext() != null) {
-            openScrollContexts.decrementAndGet();
             context.indexShard().getSearchOperationListener().onFreeScrollContext(context);
         }
     }
@@ -1052,7 +1062,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
      */
     public boolean canMatch(ShardSearchRequest request) throws IOException {
         assert request.searchType() == SearchType.QUERY_THEN_FETCH : "unexpected search type: " + request.searchType();
-        try (DefaultSearchContext context = createSearchContext(request, defaultSearchTimeout, false, "can_match")) {
+        try (DefaultSearchContext context = createSearchContext(request, defaultSearchTimeout, false, Engine.CAN_MATCH_SEARCH_SOURCE)) {
             SearchSourceBuilder source = context.request().source();
             if (canRewriteToMatchNone(source)) {
                 QueryBuilder queryBuilder = source.query();

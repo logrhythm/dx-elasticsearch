@@ -20,10 +20,6 @@ include::setup/installing-xes.asciidoc[]
 
 include::setup/setup-xes.asciidoc[]
 
-include::monitoring/configuring-monitoring.asciidoc[]
-
-include::{xes-repo-dir}/security/configuring-es.asciidoc[]
-
 include::setup/setup-xclient.asciidoc[]
 
 include::settings/configuring-xes.asciidoc[]
@@ -70,15 +66,19 @@ include::rollup/index.asciidoc[]
 
 include::frozen-indices.asciidoc[]
 
-include::rest-api/index.asciidoc[]
+include::high-availability.asciidoc[]
+
+include::{xes-repo-dir}/security/index.asciidoc[]
+
+include::{xes-repo-dir}/watcher/index.asciidoc[]
 
 include::commands/index.asciidoc[]
 
 include::how-to.asciidoc[]
 
-include::testing.asciidoc[]
-
 include::glossary.asciidoc[]
+
+include::rest-api/index.asciidoc[]
 
 include::release-notes/highlights.asciidoc[]
 

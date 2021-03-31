@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import com.avast.gradle.dockercompose.tasks.ComposePull
 import com.github.jengelman.gradle.plugins.shadow.ShadowPlugin
 import org.apache.tools.ant.taskdefs.condition.Os
 import org.elasticsearch.gradle.BuildPlugin
@@ -29,12 +30,14 @@ import org.gradle.util.DistributionLocator
 import org.gradle.plugins.ide.eclipse.model.SourceFolder
 
 plugins {
-    id 'com.gradle.build-scan' version '2.3'
+    id 'com.gradle.build-scan' version '3.5'
     id 'base'
 }
 
 apply plugin: 'nebula.info-scm'
 apply from: 'gradle/build-scan.gradle'
+apply from: 'gradle/build-complete.gradle'
+apply from: 'gradle/ide.gradle'
 
 // common maven publishing configuration
 allprojects {
@@ -131,10 +134,9 @@ allprojects {
   project.ext {
     // for ide hacks...
     isEclipse = System.getProperty("eclipse.launcher") != null ||   // Detects gradle launched from Eclipse's IDE
-            System.getProperty("eclipse.application") != null ||    // Detects gradle launched from the Eclipse compiler server
-            gradle.startParameter.taskNames.contains('eclipse') ||  // Detects gradle launched from the command line to do eclipse stuff
-            gradle.startParameter.taskNames.contains('cleanEclipse')
-    isIdea = System.getProperty("idea.active") != null || gradle.startParameter.taskNames.contains('idea') || gradle.startParameter.taskNames.contains('cleanIdea')
+      System.getProperty("eclipse.application") != null ||    // Detects gradle launched from the Eclipse compiler server
+      gradle.startParameter.taskNames.contains('eclipse') ||  // Detects gradle launched from the command line to do eclipse stuff
+      gradle.startParameter.taskNames.contains('cleanEclipse')
 
     // for BWC testing
     bwcVersions = versions
@@ -148,8 +150,8 @@ task verifyVersions {
     if (gradle.startParameter.isOffline()) {
       throw new GradleException("Must run in online mode to verify versions")
     }
-    // Read the list from maven central. 
-    // Fetch the metadata an parse the xml into Version instances because it's more straight forward here 
+    // Read the list from maven central.
+    // Fetch the metadata an parse the xml into Version instances because it's more straight forward here
     // rather than bwcVersion ( VersionCollection ).
     new URL('https://repo1.maven.org/maven2/org/elasticsearch/elasticsearch/maven-metadata.xml').openStream().withStream { s ->
       bwcVersions.compareToAuthoritative(
@@ -395,40 +397,6 @@ gradle.projectsEvaluated {
   }
 }
 
-// intellij configuration
-allprojects {
-  apply plugin: 'idea'
-
-  if (isIdea) {
-    project.buildDir = file('build-idea')
-  }
-  idea {
-    module {
-      inheritOutputDirs = false
-      outputDir = file('build-idea/classes/main')
-      testOutputDir = file('build-idea/classes/test')
-
-      // also ignore other possible build dirs
-      excludeDirs += file('build')
-      excludeDirs += file('build-eclipse')
-    }
-  }
-
-  task cleanIdeaBuildDir(type: Delete) {
-    delete 'build-idea'
-  }
-  cleanIdeaBuildDir.setGroup("ide")
-  cleanIdeaBuildDir.setDescription("Deletes the IDEA build directory.")
-
-  tasks.cleanIdea.dependsOn(cleanIdeaBuildDir)
-}
-
-idea {
-  project {
-    vcs = 'Git'
-  }
-}
-
 // eclipse configuration
 allprojects {
   apply plugin: 'eclipse'
@@ -441,29 +409,19 @@ allprojects {
   }
 
   plugins.withType(JavaBasePlugin) {
-    File eclipseBuild = project.file('build-eclipse')
-    eclipse.classpath.defaultOutputDir = eclipseBuild
-    if (isEclipse) {
-      // set this so generated dirs will be relative to eclipse build
-      project.buildDir = eclipseBuild
-      // Work around https://docs.gradle.org/current/userguide/java_gradle_plugin.html confusing Eclipse by the metadata
-      // it adds to the  classpath
-      project.file("$buildDir/pluginUnderTestMetadata").mkdirs()
-    }
+    eclipse.classpath.defaultOutputDir = file('build-eclipse')
     eclipse.classpath.file.whenMerged { classpath ->
       // give each source folder a unique corresponding output folder
       int i = 0;
       classpath.entries.findAll { it instanceof SourceFolder }.each { folder ->
         i++;
-        // this is *NOT* a path or a file.
         folder.output = "build-eclipse/" + i
       }
     }
   }
 
-  File licenseHeaderFile;
-  String prefix = ':x-pack';
-
+  File licenseHeaderFile
+  String prefix = ':x-pack'
   if (Os.isFamily(Os.FAMILY_WINDOWS)) {
     prefix = prefix.replace(':', '_')
   }
@@ -489,7 +447,7 @@ allprojects {
   // otherwise the eclipse merging is *super confusing*
   tasks.eclipse.dependsOn(cleanEclipse, copyEclipseSettings)
 
-  // work arround https://github.com/gradle/gradle/issues/6582 
+  // work arround https://github.com/gradle/gradle/issues/6582
   tasks.eclipseProject.mustRunAfter tasks.cleanEclipseProject
   tasks.matching { it.name == 'eclipseClasspath' }.all {
     it.mustRunAfter { tasks.cleanEclipseClasspath }
@@ -509,7 +467,7 @@ allprojects {
    * *is* needed for projects that depends on the project doing the shadowing.
    * Without this they won't properly depend on the shadowed project.
    */
-  if (isEclipse || isIdea) {
+  if (isEclipse) {
     project.plugins.withType(ShadowPlugin).whenPluginAdded {
       project.afterEvaluate {
         project.configurations.compile.extendsFrom project.configurations.bundle
@@ -601,23 +559,25 @@ if (System.properties.get("build.compare") != null) {
 
 allprojects {
   task resolveAllDependencies {
-      dependsOn tasks.matching { it.name == "pullFixture"}
-      doLast {
-        configurations.findAll { it.isCanBeResolved() }.each { it.resolve() }
-      }
+    if (project.path.contains("fixture")) {
+      dependsOn tasks.withType(ComposePull)
+    }
+    doLast {
+      configurations.findAll { it.isCanBeResolved() }.each { it.resolve() }
+    }
   }
 }
 
 allprojects {
   task checkPart1
-  task checkPart2 
+  task checkPart2
   tasks.matching { it.name == "check" }.all { check ->
     if (check.path.startsWith(":x-pack:")) {
       checkPart2.dependsOn check
     } else {
       checkPart1.dependsOn check
     }
-  } 
+  }
 }
 
 

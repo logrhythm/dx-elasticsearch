@@ -25,7 +25,7 @@ specifying `*` as the `<job_id>`.
 By default, an overall bucket has a span equal to the largest bucket span of the
 specified jobs. To override that behavior, use the optional
 `bucket_span` parameter. To learn more about the concept of buckets, see
-{stack-ov}/ml-buckets.html[Buckets].
+{ml-docs}/ml-buckets.html[Buckets].
 
 The `overall_score` is calculated by combining the scores of all the buckets
 within the overall bucket span. First, the maximum `anomaly_score` per job in
@@ -89,8 +89,8 @@ You must have `monitor_ml`, `monitor`, `manage_ml`, or `manage` cluster
 privileges to use this API. You also need `read` index privilege on the index
 that stores the results. The `machine_learning_admin` and `machine_learning_user`
 roles provide these privileges. For more information, see
-{xpack-ref}/security-privileges.html[Security Privileges] and
-{xpack-ref}/built-in-roles.html[Built-in Roles].
+<<security-privileges>> and
+<<built-in-roles>>.
 
 
 ==== Examples

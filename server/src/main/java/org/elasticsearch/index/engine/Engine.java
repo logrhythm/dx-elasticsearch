@@ -115,6 +115,8 @@ public abstract class Engine implements Closeable {
     public static final String HISTORY_UUID_KEY = "history_uuid";
     public static final String MIN_RETAINED_SEQNO = "min_retained_seq_no";
     public static final String MAX_UNSAFE_AUTO_ID_TIMESTAMP_COMMIT_ID = "max_unsafe_auto_id_timestamp";
+    public static final String CAN_MATCH_SEARCH_SOURCE = "can_match";
+
 
     protected final ShardId shardId;
     protected final String allocationId;
@@ -593,11 +595,11 @@ public abstract class Engine implements Closeable {
     public static class NoOpResult extends Result {
 
         NoOpResult(long term, long seqNo) {
-            super(Operation.TYPE.NO_OP, term, 0, seqNo);
+            super(Operation.TYPE.NO_OP, 0, term, seqNo);
         }
 
         NoOpResult(long term, long seqNo, Exception failure) {
-            super(Operation.TYPE.NO_OP, failure, term, 0, seqNo);
+            super(Operation.TYPE.NO_OP, failure, 0, term, seqNo);
         }
 
     }

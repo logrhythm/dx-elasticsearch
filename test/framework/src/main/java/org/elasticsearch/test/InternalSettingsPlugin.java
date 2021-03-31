@@ -24,7 +24,9 @@ import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.IndexModule;
 import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.transport.RemoteClusterConnection;
 
 import java.util.Arrays;
 import java.util.List;
@@ -49,8 +51,10 @@ public final class InternalSettingsPlugin extends Plugin {
                 INDEX_CREATION_DATE_SETTING,
                 PROVIDED_NAME_SETTING,
                 TRANSLOG_RETENTION_CHECK_INTERVAL_SETTING,
+                RemoteClusterConnection.REMOTE_MAX_PENDING_CONNECTION_LISTENERS,
                 IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING,
-                IndexModule.INDEX_QUERY_CACHE_EVERYTHING_SETTING
+                IndexModule.INDEX_QUERY_CACHE_EVERYTHING_SETTING,
+                IndexSettings.INDEX_TRANSLOG_RETENTION_TOTAL_FILES_SETTING
             );
     }
 }

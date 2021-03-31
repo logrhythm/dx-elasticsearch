@@ -182,7 +182,7 @@ public abstract class ESRestTestCase extends ESTestCase {
         assert hasXPack != null;
         assert nodeVersions != null;
     }
-    
+
     /**
      * Helper class to check warnings in REST responses with sensitivity to versions
      * used in the target cluster.
@@ -191,14 +191,14 @@ public abstract class ESRestTestCase extends ESTestCase {
         Set<String> requiredSameVersionClusterWarnings = new HashSet<>();
         Set<String> allowedWarnings = new HashSet<>();
         final Set<Version> testNodeVersions;
-        
+
         public VersionSensitiveWarningsHandler(Set<Version> nodeVersions) {
             this.testNodeVersions = nodeVersions;
         }
 
         /**
          * Adds to the set of warnings that are all required in responses if the cluster
-         * is formed from nodes all running the exact same version as the client. 
+         * is formed from nodes all running the exact same version as the client.
          * @param requiredWarnings a set of required warnings
          */
         public void current(String... requiredWarnings) {
@@ -206,11 +206,11 @@ public abstract class ESRestTestCase extends ESTestCase {
         }
 
         /**
-         * Adds to the set of warnings that are permissible (but not required) when running 
+         * Adds to the set of warnings that are permissible (but not required) when running
          * in mixed-version clusters or those that differ in version from the test client.
          * @param allowedWarnings optional warnings that will be ignored if received
          */
-        public void compatible(String... allowedWarnings) {            
+        public void compatible(String... allowedWarnings) {
             this.allowedWarnings.addAll(Arrays.asList(allowedWarnings));
         }
 
@@ -231,13 +231,13 @@ public abstract class ESRestTestCase extends ESTestCase {
                 return false;
             }
         }
-        
+
         private boolean isExclusivelyTargetingCurrentVersionCluster() {
             assertFalse("Node versions running in the cluster are missing", testNodeVersions.isEmpty());
-            return testNodeVersions.size() == 1 && 
+            return testNodeVersions.size() == 1 &&
                     testNodeVersions.iterator().next().equals(Version.CURRENT);
-        } 
-        
+        }
+
     }
 
     /**
@@ -250,14 +250,14 @@ public abstract class ESRestTestCase extends ESTestCase {
     public static RequestOptions expectWarnings(String... warnings) {
         return expectVersionSpecificWarnings(consumer -> consumer.current(warnings));
     }
-    
+
     public static RequestOptions expectVersionSpecificWarnings(Consumer<VersionSensitiveWarningsHandler> expectationsSetter) {
         Builder builder = RequestOptions.DEFAULT.toBuilder();
         VersionSensitiveWarningsHandler warningsHandler = new VersionSensitiveWarningsHandler(nodeVersions);
         expectationsSetter.accept(warningsHandler);
         builder.setWarningsHandler(warningsHandler);
         return builder.build();
-    }    
+    }
 
     /**
      * Construct an HttpHost from the given host and port
@@ -442,7 +442,7 @@ public abstract class ESRestTestCase extends ESTestCase {
         // Cleanup rollup before deleting indices.  A rollup job might have bulks in-flight,
         // so we need to fully shut them down first otherwise a job might stall waiting
         // for a bulk to finish against a non-existing index (and then fail tests)
-        // 
+        //
         // Rollups were introduced in 6.3.0 so any cluster that contains older
         // nodes won't be able to do *anything* with rollups, including cleanup.
         if (hasXPack && nodeVersions.first().onOrAfter(Version.V_6_3_0)
@@ -777,17 +777,31 @@ public abstract class ESRestTestCase extends ESTestCase {
      * @param index index to test for
      **/
     protected static void ensureGreen(String index) throws IOException {
-        Request request = new Request("GET", "/_cluster/health/" + index);
-        request.addParameter("wait_for_status", "green");
-        request.addParameter("wait_for_no_relocating_shards", "true");
-        request.addParameter("timeout", "70s");
-        request.addParameter("level", "shards");
+        ensureHealth(index, (request) -> {
+            request.addParameter("wait_for_status", "green");
+            request.addParameter("wait_for_no_relocating_shards", "true");
+            request.addParameter("timeout", "70s");
+            request.addParameter("level", "shards");
+        });
+    }
+
+    protected static void ensureHealth(Consumer<Request> requestConsumer) throws IOException {
+        ensureHealth("", requestConsumer);
+    }
+
+    protected static void ensureHealth(String index, Consumer<Request> requestConsumer) throws IOException {
+        ensureHealth(client(), index, requestConsumer);
+    }
+
+    protected static void ensureHealth(RestClient client, String index, Consumer<Request> requestConsumer) throws IOException {
+        Request request = new Request("GET", "/_cluster/health" + (index.trim().isEmpty() ? "" : "/" + index));
+        requestConsumer.accept(request);
         try {
-            client().performRequest(request);
+            client.performRequest(request);
         } catch (ResponseException e) {
             if (e.getResponse().getStatusLine().getStatusCode() == HttpStatus.SC_REQUEST_TIMEOUT) {
                 try {
-                    final Response clusterStateResponse = client().performRequest(new Request("GET", "/_cluster/state"));
+                    final Response clusterStateResponse = client.performRequest(new Request("GET", "/_cluster/state?pretty"));
                     fail("timed out waiting for green state for index [" + index + "] " +
                         "cluster state [" + EntityUtils.toString(clusterStateResponse.getEntity()) + "]");
                 } catch (Exception inner) {
@@ -924,4 +938,35 @@ public abstract class ESRestTestCase extends ESTestCase {
         }
     }
 
+
+    /**
+     * Wait for the license to be applied and active. The specified admin client is used to check the license and this is done using
+     * {@link ESTestCase#assertBusy(CheckedRunnable)} to give some time to the License to be applied on nodes.
+     *
+     * @param restClient the client to use
+     * @throws Exception if an exception is thrown while checking the status of the license
+     */
+    protected static void waitForActiveLicense(final RestClient restClient) throws Exception {
+        assertBusy(() -> {
+            final Request request = new Request("GET", "/_xpack");
+            request.setOptions(RequestOptions.DEFAULT.toBuilder());
+
+            final Response response = restClient.performRequest(request);
+            assertOK(response);
+
+            try (InputStream is = response.getEntity().getContent()) {
+                XContentType xContentType = XContentType.fromMediaTypeOrFormat(response.getEntity().getContentType().getValue());
+                final Map<String, ?> map = XContentHelper.convertToMap(xContentType.xContent(), is, true);
+                assertNotNull(map);
+                assertThat("License must exist", map.containsKey("license"), equalTo(true));
+                @SuppressWarnings("unchecked")
+                final Map<String, ?> license = (Map<String, ?>) map.get("license");
+                assertNotNull("Expecting non-null license", license);
+                assertThat("License status must exist", license.containsKey("status"), equalTo(true));
+                final String status = (String) license.get("status");
+                assertNotNull("Expecting non-null license status", status);
+                assertThat("Expecting active license", status, equalTo("active"));
+            }
+        });
+    }
 }

@@ -593,3 +593,136 @@ See <<getting-started-search>>.
 [role="exclude", id="getting-started-conclusion"]
 === Conclusion
 See <<getting-started-next-steps>>.
+
+[role="exclude",id="configuring-monitoring"]
+=== Configuring monitoring in {es}
+
+See <<monitoring-overview>>.
+
+[role="exclude",id="es-monitoring"]
+=== Monitoring {es}
+
+See <<monitor-elasticsearch-cluster>>.
+
+[role="exclude",id="testing"]
+=== Testing
+
+This page was deleted. 
+Information about the Java testing framework was removed 
+({es-issue}55257[#55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}55258[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+[role="exclude",id="testing-framework"]
+=== Java testing framework
+
+This page was deleted.
+Information about the Java testing framework was removed 
+({es-issue}55257[55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+
+[role="exclude",id="why-randomized-testing"]
+=== Why randomized testing?
+
+This page was deleted.
+Information about the Java testing framework was removed 
+({es-issue}55257[55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+
+[role="exclude",id="using-elasticsearch-test-classes"]
+=== Using the {es} test classes
+
+This page was deleted.
+Information about the Java testing framework was removed 
+({es-issue}55257[55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}55258[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+
+[role="exclude",id="unit-tests"]
+=== Unit tests
+
+This page was deleted.
+Information about the Java testing framework was removed 
+({es-issue}55257[55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}55258[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+
+[role="exclude",id="integration-tests"]
+=== Integration tests
+
+This page was deleted.
+Information about the Java testing framework was removed 
+({es-issue}55257[55257]) from the {es} Reference 
+because it was out of date and erroneously implied that it should be used by application developers.  
+There is an issue ({es-issue}55258[#55258]) 
+for providing general testing guidance for applications that communicate with {es}. 
+
+
+[role="exclude",id="number-of-shards"]
+==== Number of shards
+
+This section was deleted.
+
+[role="exclude",id="helper-methods"]
+==== Generic helper methods
+
+This section was deleted.
+
+[role="exclude",id="test-cluster-methods"]
+==== Test cluster methods
+
+This section was deleted.
+
+[role="exclude",id="changing-node-settings"]
+==== Changing node settings
+
+This section was deleted.
+
+[role="exclude",id="accessing-clients"]
+==== Accessing clients
+
+This section was deleted.
+
+[role="exclude",id="scoping"]
+==== Scoping
+
+This section was deleted.
+
+[role="exclude",id="changing-node-configuration"]
+==== Changing plugins via configuration
+
+This section was deleted.
+
+[role="exclude",id="randomized-testing"]
+=== Randomized testing
+
+This page was deleted.
+
+[role="exclude",id="generating-random-data"]
+==== Generating random data
+
+This section was deleted.
+
+[role="exclude",id="assertions"]
+=== Assertions
+
+This page was deleted.
+
+[role="exclude",id="esms"]
+=== {esms}
+
+We have stopped adding new customers to our {esms}.
+
+If you are interested in similar capabilities, contact
+https://support.elastic.co[Elastic Support] to discuss available options.

@@ -23,6 +23,7 @@ import com.github.jengelman.gradle.plugins.shadow.ShadowPlugin
 import org.apache.commons.io.IOUtils
 import org.apache.tools.ant.taskdefs.condition.Os
 import org.elasticsearch.gradle.precommit.PrecommitTasks
+import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.JavaVersion
@@ -53,6 +54,7 @@ import org.gradle.api.tasks.javadoc.Javadoc
 import org.gradle.internal.jvm.Jvm
 import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
+import org.gradle.process.internal.ExecException
 import org.gradle.util.GradleVersion
 
 import java.nio.charset.StandardCharsets
@@ -63,6 +65,8 @@ import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.util.function.Supplier
 import java.util.regex.Matcher
+import java.util.regex.Pattern
+import java.util.stream.Stream
 
 /**
  * Encapsulates build configuration for elasticsearch projects.
@@ -134,9 +138,9 @@ class BuildPlugin implements Plugin<Project> {
                 }
             }
 
-            String javaVendor = System.getProperty('java.vendor')
+            String javaVendorVersion = System.getProperty('java.vendor.version', System.getProperty('java.vendor'))
             String gradleJavaVersion = System.getProperty('java.version')
-            String gradleJavaVersionDetails = "${javaVendor} ${gradleJavaVersion}" +
+            String gradleJavaVersionDetails = "${javaVendorVersion} ${gradleJavaVersion}" +
                 " [${System.getProperty('java.vm.name')} ${System.getProperty('java.vm.version')}]"
 
             String compilerJavaVersionDetails = gradleJavaVersionDetails
@@ -153,8 +157,8 @@ class BuildPlugin implements Plugin<Project> {
                 runtimeJavaVersionEnum = JavaVersion.toVersion(findJavaSpecificationVersion(project, runtimeJavaHome))
             }
 
-            String inFipsJvmScript = 'print(java.security.Security.getProviders()[0].name.toLowerCase().contains("fips"));'
-            boolean inFipsJvm = Boolean.parseBoolean(runJavaAsScript(project, runtimeJavaHome, inFipsJvmScript))
+            String inFipsJvmScript = 'java.security.Security.getProviders()[0].name.toLowerCase().contains("fips")'
+            boolean inFipsJvm = Boolean.parseBoolean(runScript(project, runtimeJavaHome, inFipsJvmScript))
 
             // Build debugging info
             println '======================================='
@@ -444,44 +448,52 @@ class BuildPlugin implements Plugin<Project> {
 
     /** Finds printable java version of the given JAVA_HOME */
     private static String findJavaVersionDetails(Project project, String javaHome) {
-        String versionInfoScript = 'print(' +
-            'java.lang.System.getProperty("java.vendor") + " " + java.lang.System.getProperty("java.version") + ' +
-            '" [" + java.lang.System.getProperty("java.vm.name") + " " + java.lang.System.getProperty("java.vm.version") + "]");'
-        return runJavaAsScript(project, javaHome, versionInfoScript).trim()
+        String versionInfoScript = 'java.lang.System.getProperty("java.vendor.version", java.lang.System.getProperty("java.vendor")) + " " + ' +
+            'java.lang.System.getProperty("java.version") + " [" +' +
+            'java.lang.System.getProperty("java.vm.name") + " " + ' +
+            'java.lang.System.getProperty("java.vm.version") + "]"'
+        return runScript(project, javaHome, versionInfoScript).trim()
     }
 
     /** Finds the parsable java specification version */
     private static String findJavaSpecificationVersion(Project project, String javaHome) {
-        String versionScript = 'print(java.lang.System.getProperty("java.specification.version"));'
-        return runJavaAsScript(project, javaHome, versionScript)
-    }
-
-    private static String findJavaVendor(Project project, String javaHome) {
-        String vendorScript = 'print(java.lang.System.getProperty("java.vendor"));'
-        return runJavaAsScript(project, javaHome, vendorScript)
-    }
-
-    /** Finds the parsable java specification version */
-    private static String findJavaVersion(Project project, String javaHome) {
-        String versionScript = 'print(java.lang.System.getProperty("java.version"));'
-        return runJavaAsScript(project, javaHome, versionScript)
+        String versionScript = 'java.lang.System.getProperty("java.specification.version")'
+        return runScript(project, javaHome, versionScript)
     }
 
     /** Runs the given javascript using jjs from the jdk, and returns the output */
-    private static String runJavaAsScript(Project project, String javaHome, String script) {
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+    private static String runScript(Project project, String javaHome, String script) {
         if (Os.isFamily(Os.FAMILY_WINDOWS)) {
             // gradle/groovy does not properly escape the double quote for windows
             script = script.replace('"', '\\"')
         }
-        File jrunscriptPath = new File(javaHome, 'bin/jrunscript')
-        ExecResult result = project.exec {
-            executable = jrunscriptPath
-            args '-e', script
-            standardOutput = stdout
-            errorOutput = stderr
-            ignoreExitValue = true
+
+        try {
+            File jrunscriptPath = new File(javaHome, 'bin/jrunscript')
+            return exec(project, false) { spec ->
+                spec.executable = jrunscriptPath
+                spec.args '-e', "print($script);"
+            }
+        } catch (ExecException ex) {
+            // if jrunscript fails, let's try jshell
+            ByteArrayInputStream input = new ByteArrayInputStream("System.err.print(${script});\n".getBytes('UTF-8'))
+            File jshellPath = new File(javaHome, 'bin/jshell')
+            return exec(project, true) { spec ->
+                spec.executable = jshellPath
+                spec.args '-s'
+                spec.standardInput = input
+            }
+        }
+    }
+
+    private static String exec(Project project, boolean captureStdErr, Action<? super ExecSpec> spec) {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+        ExecResult result = project.exec { ExecSpec s ->
+            spec.execute(s)
+            s.standardOutput = stdout
+            s.errorOutput = stderr
+            s.ignoreExitValue = true
         }
         if (result.exitValue != 0) {
             project.logger.error("STDOUT:")
@@ -489,8 +501,14 @@ class BuildPlugin implements Plugin<Project> {
             project.logger.error("STDERR:")
             stderr.toString('UTF-8').eachLine { line -> project.logger.error(line) }
             result.rethrowFailure()
+            result.assertNormalExitValue() // assert exit value in case the failure cause is null
         }
-        return stdout.toString('UTF-8').trim()
+        String[] lines = (captureStdErr ? stderr : stdout).toString('UTF-8').trim().split('\n')
+        if (lines.length == 0) {
+            throw new GradleException("Expected command to produce output but it did not.")
+        }
+
+        return lines[lines.length - 1]
     }
 
     /** Return the configuration name used for finding transitive deps of the given dependency. */
@@ -585,7 +603,7 @@ class BuildPlugin implements Plugin<Project> {
         }
         repos.maven {
             name "elastic"
-            url "https://artifacts.elastic.co/maven"
+            url "https://artifacts-no-kpi.elastic.co/maven"
         }
         repos.jcenter()
         String luceneVersion = VersionProperties.lucene
@@ -1116,7 +1134,26 @@ class BuildPlugin implements Plugin<Project> {
             }
             final String ref = readFirstLine(head);
             if (ref.startsWith("ref:")) {
-                revision = readFirstLine(gitDir.resolve(ref.substring("ref:".length()).trim()));
+                String refName = ref.substring("ref:".length()).trim()
+                Path refFile = gitDir.resolve(refName)
+                if (Files.exists(refFile)) {
+                    revision = readFirstLine(refFile)
+                } else if (Files.exists(gitDir.resolve("packed-refs"))) {
+                    // Check packed references for commit ID
+                    Pattern p = Pattern.compile("^([a-f0-9]{40}) " + refName + "\$")
+                    Stream<String> lines = Files.lines(gitDir.resolve("packed-refs"));
+                    try {
+                        revision = lines.map( { s -> p.matcher(s) })
+                                .filter( { m -> m.matches() })
+                                .map({ m -> m.group(1) })
+                                .findFirst()
+                                .orElseThrow({ -> new IOException("Packed reference not found for refName " + refName) });
+                    } finally {
+                        lines.close()
+                    }
+                } else {
+                    throw new GradleException("Can't find revision for refName " + refName);
+                }
             } else {
                 // we are in detached HEAD state
                 revision = ref;
@@ -1129,17 +1166,22 @@ class BuildPlugin implements Plugin<Project> {
     }
 
     private static String readFirstLine(final Path path) throws IOException {
-        return Files.lines(path, StandardCharsets.UTF_8)
-                .findFirst()
-                .orElseThrow(
-                        new Supplier<IOException>() {
+        Stream lines =  Files.lines(path, StandardCharsets.UTF_8)
+        try {
+            return Files.lines(path, StandardCharsets.UTF_8)
+                    .findFirst()
+                    .orElseThrow(
+                            new Supplier<IOException>() {
 
-                            @Override
-                            IOException get() {
-                                return new IOException("file [" + path + "] is empty");
-                            }
+                                @Override
+                                IOException get() {
+                                    return new IOException("file [" + path + "] is empty");
+                                }
 
-                        });
+                            });
+        } finally {
+            lines.close()
+        }
     }
 
     /** Configures the test task */

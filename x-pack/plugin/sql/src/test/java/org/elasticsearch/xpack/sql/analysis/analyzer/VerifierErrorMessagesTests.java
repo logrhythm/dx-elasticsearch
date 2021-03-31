@@ -11,6 +11,10 @@ import org.elasticsearch.xpack.sql.analysis.index.EsIndex;
 import org.elasticsearch.xpack.sql.analysis.index.IndexResolution;
 import org.elasticsearch.xpack.sql.analysis.index.IndexResolverTests;
 import org.elasticsearch.xpack.sql.expression.function.FunctionRegistry;
+import org.elasticsearch.xpack.sql.expression.function.scalar.math.Round;
+import org.elasticsearch.xpack.sql.expression.function.scalar.math.Truncate;
+import org.elasticsearch.xpack.sql.expression.function.scalar.string.Char;
+import org.elasticsearch.xpack.sql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.sql.expression.predicate.conditional.Coalesce;
 import org.elasticsearch.xpack.sql.expression.predicate.conditional.Greatest;
 import org.elasticsearch.xpack.sql.expression.predicate.conditional.IfNull;
@@ -23,7 +27,9 @@ import org.elasticsearch.xpack.sql.type.DataType;
 import org.elasticsearch.xpack.sql.type.EsField;
 import org.elasticsearch.xpack.sql.type.TypesTests;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import static java.util.Collections.emptyMap;
@@ -231,7 +237,8 @@ public class VerifierErrorMessagesTests extends ESTestCase {
     }
 
     public void testMultipleColumns() {
-        assertEquals("1:43: Unknown column [xxx]\nline 1:8: Unknown column [xxx]",
+        // We get only one message back because the messages are grouped by the node that caused the issue
+        assertEquals("1:43: Unknown column [xxx]",
                 error("SELECT xxx FROM test GROUP BY DAY_oF_YEAR(xxx)"));
     }
 
@@ -322,11 +329,47 @@ public class VerifierErrorMessagesTests extends ESTestCase {
     public void testGroupByOnNested() {
         assertEquals("1:38: Grouping isn't (yet) compatible with nested fields [dep.dep_id]",
                 error("SELECT dep.dep_id FROM test GROUP BY dep.dep_id"));
+        assertEquals("1:8: Grouping isn't (yet) compatible with nested fields [dep.dep_id]",
+                error("SELECT dep.dep_id AS a FROM test GROUP BY a"));
+        assertEquals("1:8: Grouping isn't (yet) compatible with nested fields [dep.dep_id]",
+                error("SELECT dep.dep_id AS a FROM test GROUP BY 1"));
+        assertEquals("1:8: Grouping isn't (yet) compatible with nested fields [dep.dep_id, dep.start_date]",
+                error("SELECT dep.dep_id AS a, dep.start_date AS b FROM test GROUP BY 1, 2"));
+        assertEquals("1:8: Grouping isn't (yet) compatible with nested fields [dep.dep_id, dep.start_date]",
+                error("SELECT dep.dep_id AS a, dep.start_date AS b FROM test GROUP BY a, b"));
     }
 
     public void testHavingOnNested() {
         assertEquals("1:51: HAVING isn't (yet) compatible with nested fields [dep.start_date]",
                 error("SELECT int FROM test GROUP BY int HAVING AVG(YEAR(dep.start_date)) > 1980"));
+        assertEquals("1:22: HAVING isn't (yet) compatible with nested fields [dep.start_date]",
+                error("SELECT int, AVG(YEAR(dep.start_date)) AS average FROM test GROUP BY int HAVING average > 1980"));
+        assertEquals("1:22: HAVING isn't (yet) compatible with nested fields [dep.start_date, dep.end_date]",
+                error("SELECT int, AVG(YEAR(dep.start_date)) AS a, MAX(MONTH(dep.end_date)) AS b " +
+                        "FROM test GROUP BY int " +
+                        "HAVING a > 1980 AND b < 10"));
+    }
+
+    public void testWhereOnNested() {
+        assertEquals("1:33: WHERE isn't (yet) compatible with scalar functions on nested fields [dep.start_date]",
+                error("SELECT int FROM test WHERE YEAR(dep.start_date) + 10 > 0"));
+        assertEquals("1:13: WHERE isn't (yet) compatible with scalar functions on nested fields [dep.start_date]",
+                error("SELECT YEAR(dep.start_date) + 10 AS a FROM test WHERE int > 10 AND (int < 3 OR NOT (a > 5))"));
+        accept("SELECT int FROM test WHERE dep.start_date > CAST('2020-01-30'AS date) " +
+                "AND (int > 10 OR dep.end_date IS NULL)");
+        accept("SELECT int FROM test WHERE dep.start_date > CAST('2020-01-30' AS date) AND " +
+                "(int > 10 OR dep.end_date IS NULL) OR NOT(dep.start_date >= '2020-01-01')");
+    }
+
+    public void testOrderByOnNested() {
+        assertEquals("1:36: ORDER BY isn't (yet) compatible with scalar functions on nested fields [dep.start_date]",
+                error("SELECT int FROM test ORDER BY YEAR(dep.start_date) + 10"));
+        assertEquals("1:13: ORDER BY isn't (yet) compatible with scalar functions on nested fields [dep.start_date]",
+                error("SELECT YEAR(dep.start_date) + 10  FROM test ORDER BY 1"));
+        assertEquals("1:13: ORDER BY isn't (yet) compatible with scalar functions on nested fields " +
+                        "[dep.start_date, dep.end_date]",
+                error("SELECT YEAR(dep.start_date) + 10 AS a, MONTH(dep.end_date) - 10 as b FROM test ORDER BY 1, 2"));
+        accept("SELECT int FROM test ORDER BY dep.start_date, dep.end_date");
     }
 
     public void testGroupByScalarFunctionWithAggOnTarget() {
@@ -349,7 +392,7 @@ public class VerifierErrorMessagesTests extends ESTestCase {
                 error("SELECT * FROM test WHERE unsupported > 1"));
     }
 
-    public void testTermEqualitOnInexact() {
+    public void testTermEqualityOnInexact() {
         assertEquals("1:26: [text = 'value'] cannot operate on first argument field of data type [text]: " +
                 "No keyword/multi-field defined exact matches for [text]; define one or use MATCH/QUERY instead",
             error("SELECT * FROM test WHERE text = 'value'"));
@@ -471,13 +514,18 @@ public class VerifierErrorMessagesTests extends ESTestCase {
     }
 
     public void testInvalidTypeForStringFunction_WithOneArgNumeric() {
-        assertEquals("1:8: argument of [CHAR('foo')] must be [integer], found value ['foo'] type [keyword]",
-            error("SELECT CHAR('foo')"));
+        String functionName = randomFrom(Arrays.asList(Char.class, Space.class)).getSimpleName().toUpperCase(Locale.ROOT);
+        assertEquals("1:8: argument of [" + functionName + "('foo')] must be [integer], found value ['foo'] type [keyword]",
+            error("SELECT " + functionName + "('foo')"));
+        assertEquals("1:8: argument of [" + functionName + "(1.2)] must be [integer], found value [1.2] type [double]",
+            error("SELECT " + functionName + "(1.2)"));
     }
 
     public void testInvalidTypeForNestedStringFunctions_WithOneArg() {
-        assertEquals("1:14: argument of [CHAR('foo')] must be [integer], found value ['foo'] type [keyword]",
-            error("SELECT ASCII(CHAR('foo'))"));
+        assertEquals("1:15: argument of [SPACE('foo')] must be [integer], found value ['foo'] type [keyword]",
+            error("SELECT LENGTH(SPACE('foo'))"));
+        assertEquals("1:15: argument of [SPACE(1.2)] must be [integer], found value [1.2] type [double]",
+            error("SELECT LENGTH(SPACE(1.2))"));
     }
 
     public void testInvalidTypeForNumericFunction_WithOneArg() {
@@ -498,10 +546,13 @@ public class VerifierErrorMessagesTests extends ESTestCase {
     }
 
     public void testInvalidTypeForNumericFunction_WithTwoArgs() {
-        assertEquals("1:8: first argument of [TRUNCATE('foo', 2)] must be [numeric], found value ['foo'] type [keyword]",
-            error("SELECT TRUNCATE('foo', 2)"));
-        assertEquals("1:8: second argument of [TRUNCATE(1.2, 'bar')] must be [integer], found value ['bar'] type [keyword]",
-            error("SELECT TRUNCATE(1.2, 'bar')"));
+        String functionName = randomFrom(Arrays.asList(Round.class, Truncate.class)).getSimpleName().toUpperCase(Locale.ROOT);
+        assertEquals("1:8: first argument of [" + functionName + "('foo', 2)] must be [numeric], found value ['foo'] type [keyword]",
+            error("SELECT " + functionName + "('foo', 2)"));
+        assertEquals("1:8: second argument of [" + functionName + "(1.2, 'bar')] must be [integer], found value ['bar'] type [keyword]",
+            error("SELECT " + functionName + "(1.2, 'bar')"));
+        assertEquals("1:8: second argument of [" + functionName + "(1.2, 3.4)] must be [integer], found value [3.4] type [double]",
+            error("SELECT " + functionName + "(1.2, 3.4)"));
     }
 
     public void testInvalidTypeForBooleanFuntion_WithTwoArgs() {
@@ -540,9 +591,13 @@ public class VerifierErrorMessagesTests extends ESTestCase {
 
         assertEquals("1:8: second argument of [SUBSTRING('foo', 'bar', 3)] must be [integer], found value ['bar'] type [keyword]",
             error("SELECT SUBSTRING('foo', 'bar', 3)"));
+        assertEquals("1:8: second argument of [SUBSTRING('foo', 1.2, 3)] must be [integer], found value [1.2] type [double]",
+            error("SELECT SUBSTRING('foo', 1.2, 3)"));
 
         assertEquals("1:8: third argument of [SUBSTRING('foo', 2, 'bar')] must be [integer], found value ['bar'] type [keyword]",
             error("SELECT SUBSTRING('foo', 2, 'bar')"));
+        assertEquals("1:8: third argument of [SUBSTRING('foo', 2, 3.4)] must be [integer], found value [3.4] type [double]",
+            error("SELECT SUBSTRING('foo', 2, 3.4)"));
     }
 
     public void testInvalidTypeForFunction_WithFourArgs() {
@@ -567,7 +622,20 @@ public class VerifierErrorMessagesTests extends ESTestCase {
                 "No keyword/multi-field defined exact matches for [text]; define one or use MATCH/QUERY instead",
             error("SELECT * FROM test WHERE text RLIKE 'foo'"));
     }
-    
+
+    public void testMatchAndQueryFunctionsNotAllowedInSelect() {
+        assertEquals("1:8: Cannot use MATCH() or QUERY() full-text search functions in the SELECT clause",
+                error("SELECT MATCH(text, 'foo') FROM test"));
+        assertEquals("1:8: Cannot use MATCH() or QUERY() full-text search functions in the SELECT clause",
+                error("SELECT MATCH(text, 'foo') AS fullTextSearch FROM test"));
+        assertEquals("1:38: Cannot use MATCH() or QUERY() full-text search functions in the SELECT clause",
+                error("SELECT int > 10 AND (bool = false OR QUERY('foo*')) AS fullTextSearch FROM test"));
+        assertEquals("1:8: Cannot use MATCH() or QUERY() full-text search functions in the SELECT clause\n" +
+                "line 1:28: Cannot use MATCH() or QUERY() full-text search functions in the SELECT clause",
+                error("SELECT MATCH(text, 'foo'), MATCH(text, 'bar') FROM test"));
+        accept("SELECT * FROM test WHERE MATCH(text, 'foo')");
+    }
+
     public void testAllowCorrectFieldsInIncompatibleMappings() {
         assertNotNull(incompatibleAccept("SELECT languages FROM \"*\""));
     }
